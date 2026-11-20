@@ -1,23 +1,23 @@
-# ThermoWorks App Check Helper (Chrome) v1.1
+# ThermoWorks App Check Helper v1.2.0
 
-Opening ThermoWorks alone does **not** fill the Render dashboard. This helper must:
+Opening ThermoWorks does **not** fill Render by itself. This helper mints App Check and **POSTs** the token to your dashboard.
 
-1. Mint App Check on `cloud.thermoworks.com`
-2. **POST** the token to your Render app (`/api/thermoworks/appcheck`)
-3. Return the popup so Device can load
+## Critical setup
 
-## Install / update
+1. **Ad blockers** (uBlock, AdGuard, Brave shields, etc.) must allow:
+   - `cloud.thermoworks.com`
+   - `*.googleapis.com` / Firebase  
+   Your console showed `ERR_BLOCKED_BY_CLIENT` — that blocks reCAPTCHA, so minting fails.
+2. Install from this folder only. If you see CSP errors about `thermoworks_content.js`, you still have an **old** install.
 
-1. Chrome → `chrome://extensions`
-2. Developer mode on
-3. If already installed: click **Reload** on this extension (must show **1.1.0**)
-4. Or **Load unpacked** → this folder
+## Clean install
 
-## Use
+1. `chrome://extensions`
+2. On the helper → **Remove**
+3. Developer mode → **Load unpacked** → this folder
+4. Confirm version **1.2.0** and **no Errors**
+5. Open Render dashboard in **this Chrome** → Signals → **Refresh**
 
-1. Open the **Render** dashboard in **this same Chrome**
-2. ThermoWorks Signals → **Refresh**
-3. Allow the popup — it should stay on ThermoWorks **login** briefly
-4. Popup returns to “Success” and Device fills in
+## What success looks like
 
-If you only see the ThermoWorks “My Account Dashboard” and Device stays **Loading…**, the token never reached Render — Reload the extension to 1.1.0 and try again. Do not stay only on `/home`; the helper needs the login page’s reCAPTCHA.
+Popup briefly hits ThermoWorks login → returns to Success → Device dropdown fills (use channel 4 if that probe is live).

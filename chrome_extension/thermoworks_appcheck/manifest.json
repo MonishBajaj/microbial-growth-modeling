@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
   "name": "ThermoWorks App Check Helper",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Mints ThermoWorks App Check in-page and POSTs the token to your Render dashboard.",
-  "permissions": ["storage", "tabs", "scripting", "activeTab"],
+  "permissions": ["storage", "tabs", "scripting"],
   "host_permissions": [
     "https://cloud.thermoworks.com/*",
     "https://*.onrender.com/*",
+    "https://content-firebaseappcheck.googleapis.com/*",
     "http://127.0.0.1/*",
     "http://localhost/*"
   ],
@@ -22,11 +23,6 @@
       ],
       "js": ["dashboard_bridge.js"],
       "run_at": "document_start"
-    },
-    {
-      "matches": ["https://cloud.thermoworks.com/*"],
-      "js": ["thermoworks_content.js"],
-      "run_at": "document_idle"
     }
   ],
   "action": {
