@@ -762,7 +762,15 @@
                 select.value = saved;
             }
             fillSignalsChannels(select.selectedOptions[0]);
-            setSignalsStatus('Found ' + devices.length + ' device(s). Pick the channel used for the growth model.', 'ok');
+            const chSelect = document.getElementById('signals-channel');
+            const liveLabel = chSelect.options[chSelect.selectedIndex]
+                ? chSelect.options[chSelect.selectedIndex].textContent
+                : ('Channel ' + chSelect.value);
+            setSignalsStatus(
+                'Found ' + devices.length + ' device(s). Growth model uses one probe channel — auto-selected '
+                + liveLabel + ' (change the dropdown if you want a different channel).',
+                'ok'
+            );
             updateRunSummary();
         } catch (err) {
             select.innerHTML = '';
@@ -776,7 +784,7 @@
 
     function fillSignalsChannels(option) {
         const channelSelect = document.getElementById('signals-channel');
-        const previous = channelSelect.value || localStorage.getItem(signalsChannelKey) || '1';
+        const previous = channelSelect.value || localStorage.getItem(signalsChannelKey) || '';
         let channels = [];
         try {
             channels = option ? JSON.parse(option.dataset.channels || '[]') : [];
@@ -791,21 +799,44 @@
                 opt.textContent = 'Channel ' + n;
                 channelSelect.appendChild(opt);
             }
-        } else {
-            channels.forEach(function (ch) {
-                const opt = document.createElement('option');
-                opt.value = String(ch.number);
-                let label = ch.label || ('Channel ' + ch.number);
-                if (ch.value_c != null) {
-                    label += ' — ' + Number(ch.value_c).toFixed(1) + '°C';
-                }
-                opt.textContent = label;
-                channelSelect.appendChild(opt);
-            });
+            channelSelect.value = previous || '1';
+            return;
         }
-        if ([].some.call(channelSelect.options, function (o) { return o.value === previous; })) {
+
+        let bestLive = null;
+        channels.forEach(function (ch) {
+            const opt = document.createElement('option');
+            opt.value = String(ch.number);
+            const hasReading = ch.value_c != null && !isNaN(Number(ch.value_c));
+            let label = 'CH ' + ch.number;
+            if (ch.label && ch.label !== label) {
+                label += ' — ' + ch.label;
+            }
+            if (hasReading) {
+                label += ' — ' + Number(ch.value_c).toFixed(1) + '°C';
+                if (bestLive == null) {
+                    bestLive = String(ch.number);
+                }
+            } else {
+                label += ' — no probe';
+            }
+            opt.textContent = label;
+            opt.dataset.live = hasReading ? '1' : '0';
+            channelSelect.appendChild(opt);
+        });
+
+        // Prefer a channel that currently has a temperature; fall back to last choice / first.
+        const previousLive = previous && [].some.call(channelSelect.options, function (o) {
+            return o.value === previous && o.dataset.live === '1';
+        });
+        if (previousLive) {
+            channelSelect.value = previous;
+        } else if (bestLive) {
+            channelSelect.value = bestLive;
+        } else if (previous && [].some.call(channelSelect.options, function (o) { return o.value === previous; })) {
             channelSelect.value = previous;
         }
+        localStorage.setItem(signalsChannelKey, channelSelect.value);
     }
 
     async function loadPorts() {
