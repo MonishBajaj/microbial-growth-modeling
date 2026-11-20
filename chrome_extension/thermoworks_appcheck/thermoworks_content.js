@@ -1,29 +1,52 @@
 /**
- * Content scripts cannot see the page's window.grecaptcha (isolated world).
- * Inject a page-world script to mint App Check, then POST the token to Render.
+ * Do not use chrome.storage here — it throws
+ * "Access to storage is not allowed from this context" on some ThermoWorks pages.
+ * Job + Render POST live in the background service worker.
+ *
+ * Page-world injection is required because content scripts cannot see window.grecaptcha.
  */
 (async () => {
-  const stored = await chrome.storage.session.get('twAppCheckJob');
-  const job = stored && stored.twAppCheckJob;
-  if (!job || !job.bridgeId || !job.submitUrl) {
+  if (window.__twAppCheckRunning) {
     return;
   }
-  if (Date.now() - (job.createdAt || 0) > 15 * 60 * 1000) {
-    await chrome.storage.session.remove('twAppCheckJob');
+  window.__twAppCheckRunning = true;
+
+  function ask(type, extra) {
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage(Object.assign({ type }, extra || {}), (response) => {
+        if (chrome.runtime.lastError) {
+          resolve({ ok: false, error: chrome.runtime.lastError.message });
+          return;
+        }
+        resolve(response || { ok: false });
+      });
+    });
+  }
+
+  const jobResp = await ask('tw-appcheck-get-job');
+  if (!jobResp.ok || !jobResp.job) {
+    window.__twAppCheckRunning = false;
     return;
   }
 
   function injectAndMint() {
     return new Promise((resolve) => {
       const marker = 'tw-appcheck-page-result';
+      let settled = false;
+      function finish(data) {
+        if (settled) return;
+        settled = true;
+        window.removeEventListener('message', onMessage);
+        resolve(data);
+      }
       function onMessage(event) {
         if (event.source !== window || !event.data || event.data.source !== marker) {
           return;
         }
-        window.removeEventListener('message', onMessage);
-        resolve(event.data);
+        finish(event.data);
       }
       window.addEventListener('message', onMessage);
+      setTimeout(() => finish({ ok: false, error: 'Timed out waiting for reCAPTCHA on ThermoWorks' }), 25000);
 
       const script = document.createElement('script');
       script.textContent = `
@@ -39,7 +62,7 @@
       await sleep(400);
     }
     if (!g) {
-      post({ ok: false, error: 'reCAPTCHA not on this ThermoWorks page yet. Stay on the login page a few seconds.' });
+      post({ ok: false, error: 'reCAPTCHA not on this page. Stay on the ThermoWorks login screen.' });
       return;
     }
     try {
@@ -76,29 +99,19 @@
     const result = await injectAndMint();
     if (!result || !result.ok || !result.token) {
       console.error('[TW App Check Helper]', result && result.error);
+      window.__twAppCheckRunning = false;
       return;
     }
-
-    const save = await fetch(job.submitUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({
-        token: result.token,
-        ttl: result.ttl || '3600s',
-        bridge_id: job.bridgeId
-      })
+    const saved = await ask('tw-appcheck-submit', {
+      token: result.token,
+      ttl: result.ttl || '3600s'
     });
-    if (!save.ok) {
-      const saved = await save.json().catch(() => ({}));
-      console.error('[TW App Check Helper] submit to Render failed', saved);
-      return;
-    }
-
-    await chrome.storage.session.remove('twAppCheckJob');
-    if (job.returnUrl) {
-      window.location.href = job.returnUrl;
+    if (!saved.ok) {
+      console.error('[TW App Check Helper] submit failed', saved.error);
     }
   } catch (err) {
     console.error('[TW App Check Helper]', err);
+  } finally {
+    window.__twAppCheckRunning = false;
   }
 })();

@@ -1,33 +1,84 @@
+async function getJob() {
+  const stored = await chrome.storage.session.get('twAppCheckJob');
+  const job = stored && stored.twAppCheckJob;
+  if (!job || !job.bridgeId || !job.submitUrl) {
+    return null;
+  }
+  if (Date.now() - (job.createdAt || 0) > 15 * 60 * 1000) {
+    await chrome.storage.session.remove('twAppCheckJob');
+    return null;
+  }
+  return job;
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!message || message.type !== 'tw-appcheck-start') {
+  if (!message || !message.type) {
     return;
   }
 
-  const tabId = sender.tab && sender.tab.id;
-  if (!tabId) {
-    sendResponse({ ok: false, error: 'No tab to reuse' });
-    return;
-  }
-
-  const job = {
-    bridgeId: message.bridgeId,
-    submitUrl: message.submitUrl,
-    returnUrl: message.returnUrl || '',
-    createdAt: Date.now()
-  };
-
-  chrome.storage.session.set({ twAppCheckJob: job }).then(async () => {
-    // Same popup/tab. Prefer the login page where reCAPTCHA is present.
-    await chrome.tabs.update(tabId, {
-      url: 'https://cloud.thermoworks.com/auth/login',
-      active: true
+  if (message.type === 'tw-appcheck-start') {
+    const tabId = sender.tab && sender.tab.id;
+    if (!tabId) {
+      sendResponse({ ok: false, error: 'No tab to reuse' });
+      return;
+    }
+    const job = {
+      bridgeId: message.bridgeId,
+      submitUrl: message.submitUrl,
+      returnUrl: message.returnUrl || '',
+      createdAt: Date.now()
+    };
+    chrome.storage.session.set({ twAppCheckJob: job }).then(async () => {
+      await chrome.tabs.update(tabId, {
+        url: 'https://cloud.thermoworks.com/auth/login',
+        active: true
+      });
+      sendResponse({ ok: true, tabId });
     });
-    sendResponse({ ok: true, tabId });
-  });
-  return true;
+    return true;
+  }
+
+  if (message.type === 'tw-appcheck-get-job') {
+    getJob().then((job) => sendResponse({ ok: true, job }));
+    return true;
+  }
+
+  if (message.type === 'tw-appcheck-submit') {
+    (async () => {
+      const job = await getJob();
+      if (!job) {
+        sendResponse({ ok: false, error: 'No pending App Check job' });
+        return;
+      }
+      try {
+        const save = await fetch(job.submitUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify({
+            token: message.token,
+            ttl: message.ttl || '3600s',
+            bridge_id: job.bridgeId
+          })
+        });
+        const body = await save.json().catch(() => ({}));
+        if (!save.ok) {
+          sendResponse({ ok: false, error: body.error || ('HTTP ' + save.status) });
+          return;
+        }
+        await chrome.storage.session.remove('twAppCheckJob');
+        const tabId = sender.tab && sender.tab.id;
+        if (tabId && job.returnUrl) {
+          await chrome.tabs.update(tabId, { url: job.returnUrl, active: true });
+        }
+        sendResponse({ ok: true });
+      } catch (err) {
+        sendResponse({ ok: false, error: String(err && err.message ? err.message : err) });
+      }
+    })();
+    return true;
+  }
 });
 
-// If ThermoWorks navigates within the SPA, retry while a job is pending.
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (changeInfo.status !== 'complete' || !tab.url) {
     return;
@@ -35,8 +86,8 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (!tab.url.startsWith('https://cloud.thermoworks.com/')) {
     return;
   }
-  const stored = await chrome.storage.session.get('twAppCheckJob');
-  if (!stored.twAppCheckJob) {
+  const job = await getJob();
+  if (!job) {
     return;
   }
   try {
@@ -45,6 +96,6 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
       files: ['thermoworks_content.js']
     });
   } catch (e) {
-    // Tab may not allow scripting yet; content_scripts match will still run on load.
+    // content_scripts match still covers normal loads
   }
 });
