@@ -3,7 +3,7 @@
   "name": "ThermoWorks App Check Helper",
   "version": "1.0.0",
   "description": "Automatically mints ThermoWorks App Check tokens for the microbial growth dashboard.",
-  "permissions": ["storage", "tabs", "scripting"],
+  "permissions": ["storage", "tabs", "scripting", "activeTab"],
   "host_permissions": [
     "https://cloud.thermoworks.com/*",
     "https://*.onrender.com/*",
