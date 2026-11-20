@@ -21,7 +21,7 @@ from flask import (
     Flask, render_template, request, redirect,
     url_for, session, flash, jsonify
 )
-from enhanced_meater_api import EnhancedMeaterAPI
+from enhanced_meater_api import EnhancedMeaterAPI, extract_live_meater_reading
 from local_accounts import create_profile, reset_password, verify_login
 from job_store import create_job, get_job, job_summary, list_jobs
 from corrected_microbial_growth_model import CorrectedMicrobialGrowthModel
@@ -261,14 +261,17 @@ def _run_mode1(task_id, email, password):
 
     while time.time() < end_time:
         dd = api.get_device_realtime(device_id)
-        if dd and 'data' in dd and 'temperature' in dd['data']:
+        internal_c, ambient_c, meta = extract_live_meater_reading(dd) if dd else (None, None, {})
+        if internal_c is not None:
             readings += 1
-            td = dd['data']['temperature']
-            temperatures.append({'internal': td.get('internal', 0),
-                                 'ambient': td.get('ambient', 0)})
+            temperatures.append({'internal': internal_c, 'ambient': ambient_c})
             info['logs'].append(
-                f"🌡️ Reading #{readings}: Internal {td.get('internal', 0):.1f}°C, "
-                f"Ambient {td.get('ambient', 0):.1f}°C")
+                f"🌡️ Reading #{readings}: Internal {internal_c:.1f}°C, "
+                f"Ambient {ambient_c:.1f}°C (live probe)"
+            )
+        else:
+            reason = (meta or {}).get('reason') or api.last_reject_reason or 'not a live probe'
+            info['logs'].append(f'⚠️ Skipping MEATER sample — {reason}.')
         time.sleep(2)
 
     avg_temps_str = ''
