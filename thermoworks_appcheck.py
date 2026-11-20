@@ -31,6 +31,9 @@ _cache_lock = threading.Lock()
 _mint_lock = threading.Lock()
 _token: Optional[str] = None
 _expires_at = 0.0
+# bridge_id -> {created, token?, expires_at?}
+_bridges: dict = {}
+_BRIDGE_TTL_SEC = 900.0
 
 _EXCHANGE_JS = r"""
 (async () => {
@@ -86,6 +89,79 @@ def _store(token: str, ttl_seconds: float) -> None:
         _expires_at = time.time() + ttl_seconds
 
 
+def store_browser_token(token: str, ttl: str | float = "3600s") -> float:
+    """Accept an App Check JWT minted in the user's browser."""
+    token = (token or "").strip()
+    if not token or len(token) < 20:
+        raise ValueError("App Check token is missing or too short.")
+    if isinstance(ttl, (int, float)):
+        ttl_seconds = max(float(ttl), 60.0)
+    else:
+        ttl_seconds = _ttl_seconds(str(ttl))
+    _store(token, ttl_seconds)
+    return ttl_seconds
+
+
+def create_bridge() -> str:
+    """Create a one-time bridge id for browser App Check without a lab PC."""
+    import secrets
+
+    bridge_id = secrets.token_urlsafe(16)
+    now = time.time()
+    with _cache_lock:
+        # Drop stale bridges.
+        dead = [key for key, value in _bridges.items() if now - value.get("created", 0) > _BRIDGE_TTL_SEC]
+        for key in dead:
+            _bridges.pop(key, None)
+        _bridges[bridge_id] = {"created": now, "token": None, "expires_at": 0.0}
+    return bridge_id
+
+
+def complete_bridge(bridge_id: str, token: str, ttl: str | float = "3600s") -> float:
+    """Store token for a bridge id and in the global App Check cache."""
+    bridge_id = (bridge_id or "").strip()
+    if not bridge_id:
+        raise ValueError("bridge_id is required.")
+    ttl_seconds = store_browser_token(token, ttl)
+    with _cache_lock:
+        entry = _bridges.get(bridge_id)
+        if entry is None:
+            raise ValueError("Unknown or expired bridge_id. Re-open App Check from the dashboard.")
+        if time.time() - entry.get("created", 0) > _BRIDGE_TTL_SEC:
+            _bridges.pop(bridge_id, None)
+            raise ValueError("App Check bridge expired. Re-open App Check from the dashboard.")
+        entry["token"] = token
+        entry["expires_at"] = time.time() + ttl_seconds
+    return ttl_seconds
+
+
+def bridge_status(bridge_id: str) -> dict:
+    bridge_id = (bridge_id or "").strip()
+    with _cache_lock:
+        entry = _bridges.get(bridge_id)
+        cached = _cached()
+        if entry and entry.get("token"):
+            return {
+                "ready": True,
+                "bridge_ready": True,
+                "expires_in": max(int(entry.get("expires_at", 0) - time.time()), 0),
+            }
+        if cached:
+            return {
+                "ready": True,
+                "bridge_ready": False,
+                "expires_in": max(int(_expires_at - time.time()), 0),
+            }
+        return {"ready": False, "bridge_ready": False, "expires_in": 0}
+
+
+def appcheck_status() -> dict:
+    cached = _cached()
+    with _cache_lock:
+        expires_in = max(int(_expires_at - time.time()), 0) if cached else 0
+    return {"ready": bool(cached), "expires_in": expires_in}
+
+
 def _ttl_seconds(ttl: str) -> float:
     text = (ttl or "").strip().lower()
     if text.endswith("s"):
@@ -131,14 +207,38 @@ async def _cdp_call(ws, pending, seq_box, method, params=None, timeout=30):
     return data.get("result", {})
 
 
+def _env_token() -> Optional[Tuple[str, float]]:
+    """Optional App Check JWT from env (useful only until it expires)."""
+    token = (os.environ.get("THERMOWORKS_APPCHECK_TOKEN") or "").strip()
+    if not token:
+        return None
+    try:
+        ttl = float(os.environ.get("THERMOWORKS_APPCHECK_TTL_SECONDS") or "3000")
+    except ValueError:
+        ttl = 3000.0
+    return token, max(ttl, 60.0)
+
+
 async def _mint() -> Tuple[str, float]:
+    env = _env_token()
+    if env:
+        return env
+
+    cached = _cached()
+    if cached:
+        with _cache_lock:
+            return cached, max(_expires_at - time.time(), 60.0)
+
     if not os.environ.get("DISPLAY"):
         raise RuntimeError(
-            "ThermoWorks sign-in needs a desktop session so Chrome can complete App Check."
+            "ThermoWorks App Check token missing. Click Refresh again and complete "
+            "the browser App Check popup (or paste the capture script on cloud.thermoworks.com)."
         )
     chrome = shutil.which("google-chrome") or shutil.which("google-chrome-stable")
     if not chrome:
-        raise RuntimeError("Google Chrome is required to sign in to ThermoWorks Cloud.")
+        raise RuntimeError(
+            "Google Chrome is required for ThermoWorks App Check on this machine."
+        )
 
     os.makedirs(_PROFILE, exist_ok=True)
     port = _free_port()

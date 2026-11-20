@@ -8,10 +8,12 @@ Uses the unofficial thermoworks-cloud library against ThermoWorks Cloud
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from typing import Callable, Optional
 
 import numpy as np
+import requests
 from aiohttp import ClientSession, TraceConfig
 
 from thermoworks_appcheck import get_app_check_token
@@ -19,6 +21,94 @@ from thermoworks_cloud import AuthFactory, ResourceNotFoundError, ThermoworksClo
 from thermoworks_cloud.auth import AuthenticationError
 
 LogFn = Optional[Callable[[str], None]]
+
+
+def _sidecar_url() -> str:
+    if os.environ.get('THERMOWORKS_FORCE_LOCAL', '').lower() in ('1', 'true', 'yes'):
+        return ''
+    return (os.environ.get('THERMOWORKS_SIDECAR_URL') or '').strip().rstrip('/')
+
+
+def _sidecar_secret() -> str:
+    return os.environ.get('THERMOWORKS_SIDECAR_SECRET', 'thermoworks-sidecar-secret')
+
+
+def _sidecar_headers() -> dict:
+    return {
+        'Authorization': f'Bearer {_sidecar_secret()}',
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+    }
+
+
+def _list_devices_via_sidecar(email: str, password: str, log: LogFn = None) -> list:
+    base = _sidecar_url()
+    _log(log, f'🔐 Asking lab ThermoWorks sidecar at {base}…')
+    response = requests.post(
+        f'{base}/v1/devices',
+        headers=_sidecar_headers(),
+        json={'email': email, 'password': password},
+        timeout=180,
+    )
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise RuntimeError(
+            f'Sidecar returned non-JSON ({response.status_code}). Is it running?'
+        ) from exc
+    if response.status_code >= 400:
+        raise RuntimeError(payload.get('error') or f'Sidecar error HTTP {response.status_code}')
+    devices = payload.get('devices') or []
+    _log(log, f'✅ Sidecar found {len(devices)} ThermoWorks device(s).')
+    return devices
+
+
+def _collect_via_sidecar(
+    email: str,
+    password: str,
+    duration_hours: float,
+    interval_seconds: float,
+    serial: Optional[str],
+    channel: int,
+    log: LogFn = None,
+):
+    base = _sidecar_url()
+    _log(log, f'📡 Collecting via lab ThermoWorks sidecar at {base}…')
+    # Long runs need a long timeout (full analysis ~8h).
+    timeout = max(duration_hours * 3600.0 + 120.0, 300.0)
+    response = requests.post(
+        f'{base}/v1/collect',
+        headers=_sidecar_headers(),
+        json={
+            'email': email,
+            'password': password,
+            'duration_hours': duration_hours,
+            'interval_seconds': interval_seconds,
+            'serial': serial,
+            'channel': channel,
+        },
+        timeout=timeout,
+    )
+    try:
+        payload = response.json()
+    except ValueError:
+        _log(log, f'❌ Sidecar returned non-JSON ({response.status_code}).')
+        return None
+    for line in payload.get('logs') or []:
+        _log(log, line)
+    if response.status_code >= 400 or not payload.get('data'):
+        _log(log, f"❌ Sidecar collect failed: {payload.get('error') or response.status_code}")
+        return None
+    data = payload['data']
+    return {
+        'time_hours': np.array(data.get('time_hours') or [], dtype=float),
+        'ambient_temperature': np.array(data.get('ambient_temperature') or [], dtype=float),
+        'internal_temperature': np.array(data.get('internal_temperature') or [], dtype=float),
+        'device_id': data.get('device_id'),
+        'readings_count': data.get('readings_count') or 0,
+        'serial': data.get('serial'),
+        'channel': data.get('channel'),
+    }
 
 
 def _log(log: LogFn, message: str) -> None:
@@ -114,6 +204,13 @@ async def _list_devices_async(client: ThermoworksCloud):
 
 def list_devices(email: str, password: str, log: LogFn = None) -> list:
     """Authenticate and return ThermoWorks Cloud devices with channel snapshots."""
+    if _sidecar_url():
+        try:
+            return _list_devices_via_sidecar(email, password, log=log)
+        except Exception as exc:
+            _log(log, f'❌ ThermoWorks sidecar device list failed: {exc}')
+            raise
+
     _log(log, '🔐 Authenticating with ThermoWorks Cloud...')
 
     async def work(client):
@@ -225,6 +322,11 @@ def collect_temperature_data(
     """
     channel = max(1, int(channel))
     interval_seconds = max(float(interval_seconds), 1.0)
+
+    if _sidecar_url():
+        return _collect_via_sidecar(
+            email, password, duration_hours, interval_seconds, serial, channel, log=log,
+        )
 
     async def work(client):
         devices = await _list_devices_async(client)

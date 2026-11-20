@@ -138,9 +138,8 @@
                             <option value="4">Channel 4</option>
                         </select>
                         <p class="hint" id="signals-status">
-                            Refresh loads devices from ThermoWorks Cloud. A Chrome window may open briefly
-                            so Firebase can confirm this is the Cloud site. The selected channel becomes
-                            the temperature series for the model (°C).
+                            Refresh opens a browser App Check window so ThermoWorks works on Render without a lab PC.
+                            If automatic mint fails, follow the popup’s fallback (script on cloud.thermoworks.com).
                         </p>
                     </div>
 
@@ -244,6 +243,9 @@
     };
     const signalsDevicesUrl = "{{ url_for('signals_devices') }}";
     const pushStatusUrl = "{{ url_for('arduino_push_status') }}";
+    const appCheckStatusUrl = "{{ url_for('thermoworks_appcheck_status') }}";
+    const appCheckBridgeUrl = "{{ url_for('thermoworks_appcheck_bridge') }}";
+    const appCheckPageUrl = "{{ url_for('thermoworks_appcheck_page') }}";
     const signalsStorageKey = 'signalsSerial';
     const signalsChannelKey = 'signalsChannel';
     const modeLabels = {
@@ -563,6 +565,94 @@
         el.className = 'hint' + (kind ? ' ' + kind : '');
     }
 
+    async function ensureThermoworksAppCheck() {
+        const statusResp = await fetch(appCheckStatusUrl, {
+            credentials: 'same-origin',
+            headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+        });
+        if (statusResp.status === 401) {
+            throw new Error('Session expired. Sign in again, then click Refresh.');
+        }
+        const statusData = await statusResp.json().catch(function () { return {}; });
+        if (statusData.ready) {
+            return;
+        }
+
+        const bridgeResp = await fetch(appCheckBridgeUrl, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+        });
+        const bridgeData = await bridgeResp.json().catch(function () { return {}; });
+        if (!bridgeResp.ok || !bridgeData.bridge_id) {
+            throw new Error(bridgeData.error || 'Could not start ThermoWorks App Check.');
+        }
+        const bridgeId = bridgeData.bridge_id;
+        const popup = window.open(
+            appCheckPageUrl + '?bridge_id=' + encodeURIComponent(bridgeId),
+            'thermoworksAppCheck',
+            'popup=yes,width=520,height=640'
+        );
+        if (!popup) {
+            throw new Error('Popup blocked. Allow popups for this site, then click Refresh.');
+        }
+
+        setSignalsStatus('Complete ThermoWorks App Check in the popup window…', '');
+
+        await new Promise(function (resolve, reject) {
+            let settled = false;
+            function done(err) {
+                if (settled) {
+                    return;
+                }
+                settled = true;
+                window.removeEventListener('message', onMessage);
+                clearInterval(pollTimer);
+                clearTimeout(timeoutId);
+                if (err) {
+                    reject(err);
+                } else {
+                    resolve();
+                }
+            }
+            function onMessage(event) {
+                if (event.origin !== window.location.origin) {
+                    return;
+                }
+                const data = event.data || {};
+                if (data.type !== 'thermoworks-appcheck' || data.bridge_id !== bridgeId) {
+                    return;
+                }
+                if (data.ok) {
+                    done(null);
+                }
+                // Automatic mint may fail and fall back inside the popup; keep waiting.
+            }
+            window.addEventListener('message', onMessage);
+            const pollTimer = setInterval(async function () {
+                try {
+                    if (popup && popup.closed) {
+                        // Still allow bridge completion from ThermoWorks console script.
+                    }
+                    const response = await fetch(
+                        appCheckStatusUrl + '?bridge_id=' + encodeURIComponent(bridgeId),
+                        {
+                            credentials: 'same-origin',
+                            headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+                        }
+                    );
+                    const data = await response.json();
+                    if (data.ready) {
+                        done(null);
+                    }
+                } catch (e) {}
+            }, 1500);
+            const timeoutId = setTimeout(function () {
+                done(new Error('Timed out waiting for ThermoWorks App Check.'));
+            }, 180000);
+        });
+    }
+
     async function loadSignalsDevices() {
         const email = document.getElementById('tw-email').value.trim();
         const password = document.getElementById('tw-password').value;
@@ -574,7 +664,7 @@
             return;
         }
 
-        setSignalsStatus('Looking up ThermoWorks devices… A Chrome window may open briefly to sign in.', '');
+        setSignalsStatus('Preparing ThermoWorks App Check…', '');
         select.innerHTML = '';
         const waiting = document.createElement('option');
         waiting.value = '';
@@ -582,12 +672,31 @@
         select.appendChild(waiting);
 
         try {
+            await ensureThermoworksAppCheck();
+            setSignalsStatus('Looking up ThermoWorks devices…', '');
             const response = await fetch(signalsDevicesUrl, {
                 method: 'POST',
-                headers: {'Content-Type': 'application/json'},
+                credentials: 'same-origin',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': 'application/json'
+                },
                 body: JSON.stringify({email: email, password: password})
             });
-            const data = await response.json();
+            const raw = await response.text();
+            let data = {};
+            try {
+                data = raw ? JSON.parse(raw) : {};
+            } catch (parseErr) {
+                if (response.redirected || raw.indexOf('<!DOCTYPE') !== -1 || raw.indexOf('<html') !== -1) {
+                    throw new Error('Session expired. Sign in again, then click Refresh.');
+                }
+                throw new Error('Unexpected server response while loading devices.');
+            }
+            if (response.status === 401) {
+                throw new Error(data.error || 'Session expired. Sign in again, then click Refresh.');
+            }
             if (!response.ok) {
                 throw new Error(data.error || 'device list failed');
             }
@@ -851,7 +960,12 @@
         updateRunSummary();
     }
 
-    document.getElementById('analysis-form').addEventListener('submit', function (e) {
+    document.getElementById('analysis-form').addEventListener('submit', async function (e) {
+        const appCheckAlreadyDone = this.dataset.appCheckReady === '1';
+        if (appCheckAlreadyDone) {
+            this.dataset.appCheckReady = '';
+        }
+
         if (!selectedMode) {
             e.preventDefault();
             return;
@@ -898,6 +1012,22 @@
                 localStorage.setItem(signalsStorageKey, serial);
             }
             localStorage.setItem(signalsChannelKey, document.getElementById('signals-channel').value);
+
+            if (!appCheckAlreadyDone) {
+                e.preventDefault();
+                const form = this;
+                try {
+                    setSignalsStatus('Preparing ThermoWorks App Check…', '');
+                    await ensureThermoworksAppCheck();
+                } catch (err) {
+                    setSignalsStatus(err.message || String(err), 'err');
+                    alert(err.message || String(err));
+                    return;
+                }
+                form.dataset.appCheckReady = '1';
+                form.requestSubmit();
+                return;
+            }
         }
 
         const overlay = document.getElementById('loading-overlay');

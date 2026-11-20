@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ThermoWorks App Check</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 1.25rem; background: #f4f7f6; color: #123; }
+    h1 { font-size: 1.1rem; margin: 0 0 0.5rem; }
+    p { font-size: 0.9rem; line-height: 1.45; color: #345; }
+    .card { background: #fff; border: 1px solid #cfe0db; border-radius: 12px; padding: 1rem; }
+    .status { margin-top: 0.75rem; font-weight: 600; }
+    .ok { color: #0a7a43; }
+    .warn { color: #a15c00; }
+    .err { color: #b00020; }
+    button, .btn {
+      display: inline-block; margin-top: 0.75rem; margin-right: 0.5rem;
+      background: #0f766e; color: #fff; border: 0; border-radius: 8px;
+      padding: 0.55rem 0.9rem; font-weight: 600; cursor: pointer; text-decoration: none;
+    }
+    button.secondary { background: #475569; }
+    textarea { width: 100%; min-height: 7rem; margin-top: 0.5rem; font-size: 0.75rem; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>ThermoWorks verification</h1>
+    <p>
+      This window asks Google/Firebase for an App Check token in <strong>your browser</strong>
+      so Render does not need a lab PC. Keep it open until you see success.
+    </p>
+    <p class="status" id="status">Starting…</p>
+    <div id="fallback" class="hidden">
+      <p class="warn">
+        Automatic mint failed (ThermoWorks often locks reCAPTCHA to their domain).
+        Use the fallback below — still no lab PC required.
+      </p>
+      <button type="button" id="open-tw">1. Open ThermoWorks Cloud</button>
+      <button type="button" class="secondary" id="copy-script">2. Copy capture script</button>
+      <p>3. On the ThermoWorks tab press F12 → Console → paste → Enter.</p>
+      <textarea id="script" readonly></textarea>
+      <p>This window will close automatically when the token arrives.</p>
+    </div>
+  </div>
+
+  <script type="module">
+    const bridgeId = {{ bridge_id|tojson }};
+    const statusEl = document.getElementById('status');
+    const fallbackEl = document.getElementById('fallback');
+    const scriptEl = document.getElementById('script');
+    const submitUrl = {{ url_for('thermoworks_appcheck_submit', _external=True)|tojson }};
+    const statusUrl = {{ url_for('thermoworks_appcheck_status', _external=True)|tojson }};
+
+    function setStatus(text, kind) {
+      statusEl.textContent = text;
+      statusEl.className = 'status ' + (kind || '');
+    }
+
+    async function postToken(token, ttl) {
+      const response = await fetch({{ url_for('thermoworks_appcheck_submit')|tojson }}, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest'
+        },
+        body: JSON.stringify({ token, ttl, bridge_id: bridgeId })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || 'Could not store App Check token');
+      }
+      return data;
+    }
+
+    function notifyOpener(ok, error) {
+      try {
+        if (window.opener && !window.opener.closed) {
+          window.opener.postMessage({
+            type: 'thermoworks-appcheck',
+            ok,
+            bridge_id: bridgeId,
+            error: error || null
+          }, window.location.origin);
+        }
+      } catch (e) {}
+    }
+
+    function buildFallbackScript() {
+      return `(() => {
+  const bridgeId = ${JSON.stringify(bridgeId)};
+  const submitUrl = ${JSON.stringify(submitUrl)};
+  (async () => {
+    const g = window.grecaptcha && window.grecaptcha.enterprise;
+    if (!g) { alert('reCAPTCHA not ready. Wait for the ThermoWorks login page to finish loading, then run again.'); return; }
+    const ids = Object.keys((window.___grecaptcha_cfg || {}).clients || {});
+    const widgetId = ids.length ? Number(ids[0]) : 0;
+    const recaptcha = await new Promise((resolve, reject) => {
+      g.ready(() => g.execute(widgetId, { action: 'fire_app_check' }).then(resolve).catch(reject));
+    });
+    const url = 'https://content-firebaseappcheck.googleapis.com/v1/projects/thermoworks-cloud-production/apps/1:78998049458:web:b41e9d405d8c7de95eefab:exchangeRecaptchaEnterpriseToken?key=AIzaSyCf079iccUFc1k7VHdGXng22zXDy8Y3KEY';
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ recaptcha_enterprise_token: recaptcha })
+    });
+    const body = await resp.json();
+    if (!resp.ok || !body.token) {
+      alert('App Check exchange failed: ' + ((body.error && body.error.message) || resp.status));
+      return;
+    }
+    const save = await fetch(submitUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ token: body.token, ttl: body.ttl || '3600s', bridge_id: bridgeId })
+    });
+    const saved = await save.json().catch(() => ({}));
+    if (!save.ok) {
+      alert('Could not send token to dashboard: ' + (saved.error || save.status));
+      return;
+    }
+    alert('ThermoWorks App Check captured. You can close this tab and return to the dashboard.');
+  })().catch((err) => alert(String(err)));
+})();`;
+    }
+
+    async function mintWithFirebase() {
+      setStatus('Requesting App Check in this browser…', '');
+      const { initializeApp } = await import('https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js');
+      const {
+        initializeAppCheck,
+        ReCaptchaEnterpriseProvider,
+        getToken
+      } = await import('https://www.gstatic.com/firebasejs/10.14.1/firebase-app-check.js');
+
+      const app = initializeApp({
+        apiKey: 'AIzaSyCf079iccUFc1k7VHdGXng22zXDy8Y3KEY',
+        authDomain: 'thermoworks-cloud-production.firebaseapp.com',
+        projectId: 'thermoworks-cloud-production',
+        storageBucket: 'thermoworks-cloud-production.appspot.com',
+        messagingSenderId: '78998049458',
+        appId: '1:78998049458:web:b41e9d405d8c7de95eefab'
+      });
+      const appCheck = initializeAppCheck(app, {
+        provider: new ReCaptchaEnterpriseProvider('6LcsqOMtAAAAAHtQqSpUGXg-KVQBJYvEILqVxHHJ'),
+        isTokenAutoRefreshEnabled: false
+      });
+      const result = await getToken(appCheck, /* forceRefresh */ true);
+      if (!result || !result.token) {
+        throw new Error('Firebase App Check returned no token');
+      }
+      await postToken(result.token, '3600s');
+      setStatus('Success. Returning to the dashboard…', 'ok');
+      notifyOpener(true);
+      setTimeout(() => window.close(), 800);
+    }
+
+    function showFallback(err) {
+      setStatus('Automatic mint failed: ' + err, 'warn');
+      fallbackEl.classList.remove('hidden');
+      scriptEl.value = buildFallbackScript();
+      document.getElementById('open-tw').onclick = function () {
+        window.open('https://cloud.thermoworks.com/auth/login', '_blank', 'noopener,noreferrer');
+      };
+      document.getElementById('copy-script').onclick = async function () {
+        try {
+          await navigator.clipboard.writeText(scriptEl.value);
+          setStatus('Script copied. Paste it in the ThermoWorks console.', 'ok');
+        } catch (e) {
+          scriptEl.select();
+          setStatus('Select the script and copy it manually (Ctrl/Cmd+C).', 'warn');
+        }
+      };
+      // Poll until bridge completed from ThermoWorks console script.
+      const timer = setInterval(async () => {
+        try {
+          const response = await fetch(statusUrl + '?bridge_id=' + encodeURIComponent(bridgeId), {
+            credentials: 'same-origin',
+            headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+          });
+          const data = await response.json();
+          if (data.ready) {
+            clearInterval(timer);
+            setStatus('Success. Returning to the dashboard…', 'ok');
+            notifyOpener(true);
+            setTimeout(() => window.close(), 800);
+          }
+        } catch (e) {}
+      }, 1500);
+    }
+
+    try {
+      await mintWithFirebase();
+    } catch (err) {
+      showFallback(err && err.message ? err.message : String(err));
+      notifyOpener(false, err && err.message ? err.message : String(err));
+    }
+  </script>
+</body>
+</html>

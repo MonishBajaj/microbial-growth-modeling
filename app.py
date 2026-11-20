@@ -38,6 +38,13 @@ from thermoworks_signals import (
     device_snapshot_for_api,
     list_devices as list_signals_devices,
 )
+from thermoworks_appcheck import (
+    appcheck_status,
+    bridge_status,
+    complete_bridge,
+    create_bridge,
+    store_browser_token,
+)
 from arduino_push import (
     collect_temperature_data as collect_push_temperature_data,
     ingest_path,
@@ -101,6 +108,14 @@ def login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         if not session.get('authenticated'):
+            wants_json = (
+                request.path.startswith('/api/')
+                or request.accept_mimetypes.best == 'application/json'
+                or request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+                or (request.content_type or '').startswith('application/json')
+            )
+            if wants_json:
+                return jsonify({'error': 'Please sign in again.', 'devices': []}), 401
             flash('Please sign in first.', 'error')
             return redirect(url_for('login'))
         return f(*args, **kwargs)
@@ -497,6 +512,74 @@ def api_models():
     return jsonify(list_models_for_api())
 
 
+@app.route('/thermoworks/appcheck')
+@login_required
+def thermoworks_appcheck_page():
+    """Popup page that mints Firebase App Check in the visitor's browser."""
+    bridge_id = request.args.get('bridge_id') or create_bridge()
+    return render_template('thermoworks_appcheck.html', bridge_id=bridge_id)
+
+
+@app.route('/api/thermoworks/appcheck', methods=['GET', 'POST', 'OPTIONS'])
+def thermoworks_appcheck_submit():
+    """Store a browser-minted App Check token (session or bridge_id)."""
+    if request.method == 'OPTIONS':
+        response = app.make_response(('', 204))
+        response.headers['Access-Control-Allow-Origin'] = 'https://cloud.thermoworks.com'
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Accept'
+        response.headers['Access-Control-Max-Age'] = '86400'
+        return response
+
+    if request.method == 'GET':
+        if not session.get('authenticated'):
+            return jsonify({'error': 'Please sign in again.', 'ready': False}), 401
+        bridge_id = request.args.get('bridge_id', '').strip()
+        if bridge_id:
+            return jsonify(bridge_status(bridge_id))
+        return jsonify(appcheck_status())
+
+    payload = request.get_json(silent=True) or {}
+    token = (payload.get('token') or '').strip()
+    ttl = payload.get('ttl') or '3600s'
+    bridge_id = (payload.get('bridge_id') or '').strip()
+
+    try:
+        if bridge_id:
+            ttl_seconds = complete_bridge(bridge_id, token, ttl)
+        else:
+            if not session.get('authenticated'):
+                return jsonify({'error': 'Please sign in again.'}), 401
+            ttl_seconds = store_browser_token(token, ttl)
+    except ValueError as exc:
+        response = jsonify({'error': str(exc), 'ok': False})
+        response.status_code = 400
+        response.headers['Access-Control-Allow-Origin'] = 'https://cloud.thermoworks.com'
+        return response
+
+    response = jsonify({'ok': True, 'expires_in': int(ttl_seconds)})
+    # Allow the ThermoWorks console fallback script to POST the token.
+    response.headers['Access-Control-Allow-Origin'] = 'https://cloud.thermoworks.com'
+    return response
+
+
+@app.route('/api/thermoworks/appcheck/status')
+@login_required
+def thermoworks_appcheck_status():
+    """Poll whether browser App Check completed for this session/bridge."""
+    bridge_id = request.args.get('bridge_id', '').strip()
+    if bridge_id:
+        return jsonify(bridge_status(bridge_id))
+    return jsonify(appcheck_status())
+
+
+@app.route('/api/thermoworks/appcheck/bridge', methods=['POST'])
+@login_required
+def thermoworks_appcheck_bridge():
+    """Create a bridge id used by the App Check popup / console fallback."""
+    return jsonify({'bridge_id': create_bridge()})
+
+
 @app.route('/api/signals/devices', methods=['POST'])
 @login_required
 def signals_devices():
@@ -515,7 +598,11 @@ def signals_devices():
         session['tw_password'] = password
         return jsonify({'devices': device_snapshot_for_api(devices), 'error': None})
     except Exception as exc:
-        return jsonify({'error': str(exc), 'devices': []}), 401
+        message = str(exc)
+        status = 503 if (
+            'App Check' in message or 'Chrome' in message or 'browser' in message.lower()
+        ) else 401
+        return jsonify({'error': message, 'devices': []}), status
 
 
 @app.route('/api/arduino/ingest', methods=['POST', 'OPTIONS'])
