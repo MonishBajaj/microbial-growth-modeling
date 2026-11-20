@@ -3,3 +3,4 @@ __pycache__/
 .venv/
 venv/
 thermoworks_sidecar_url.txt
+local_users.json

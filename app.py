@@ -21,9 +21,8 @@ from flask import (
     Flask, render_template, request, redirect,
     url_for, session, flash, jsonify
 )
-from werkzeug.security import check_password_hash
-
 from enhanced_meater_api import EnhancedMeaterAPI
+from local_accounts import create_profile, reset_password, verify_login
 from corrected_microbial_growth_model import CorrectedMicrobialGrowthModel
 from arduino_serial import collect_temperature_data, list_ports
 from arduino_wifi import (
@@ -82,22 +81,6 @@ def _source_label(data_source):
         return _SOURCE_LABELS[data_source]
     return str(data_source).replace('_', ' ').title()
 
-
-# Local dashboard accounts. Passwords are stored only as hashes.
-_LOCAL_USERS = {
-    'bajajmonish0@gmail.com': (
-        'pbkdf2:sha256:1000000$vTT6AXrrEBm77xNA$'
-        '3a3813f741acf88a88d45ff46197c465f1a7135ce0baa73c60fe4c558a5927d8'
-    ),
-    'mishralabuga@gmail.com': (
-        'pbkdf2:sha256:1000000$lUqC5MZOObykkvWl$'
-        'afca0eb191db2c176d32c88d40026a217dccd71f67b1fe0d247f792875e3d1e7'
-    ),
-    'juan.gao@uga.edu': (
-        'pbkdf2:sha256:1000000$h7Es0zpHGXnbXVeY$'
-        '3618974f1e8459e959434c645b7aced4ea56cea7460aed5bc70c23688cd8ebac'
-    ),
-}
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -440,8 +423,10 @@ def index():
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
+    if session.get('authenticated'):
+        return redirect(url_for('dashboard'))
     if request.method == 'GET':
-        return render_template('login.html')
+        return render_template('login.html', active_tab='signin')
 
     email = request.form.get('email', '').strip()
     password = request.form.get('password', '').strip()
@@ -450,21 +435,70 @@ def login():
         flash('Email and password are required.', 'error')
         return redirect(url_for('login'))
 
-    email_key = email.lower()
-    password_hash = None
-    for stored_email, stored_hash in _LOCAL_USERS.items():
-        if hmac.compare_digest(email_key, stored_email):
-            password_hash = stored_hash
-            break
-
-    if password_hash and check_password_hash(password_hash, password):
+    if verify_login(email, password):
         session['authenticated'] = True
-        session['email'] = email
+        session['email'] = email.lower()
         session['password'] = password  # used later for optional MEATER analysis
         flash('Signed in successfully!', 'success')
         return redirect(url_for('dashboard'))
 
     flash('Authentication failed. Please check your email and password.', 'error')
+    return redirect(url_for('login'))
+
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    """Create profile tab — new dashboard account."""
+    if session.get('authenticated'):
+        return redirect(url_for('dashboard'))
+    if request.method == 'GET':
+        return render_template('login.html', active_tab='register')
+
+    name = request.form.get('name', '').strip()
+    email = request.form.get('email', '').strip()
+    password = request.form.get('password', '')
+    confirm = request.form.get('confirm_password', '')
+    access_code = request.form.get('access_code', '').strip()
+
+    if password != confirm:
+        flash('Passwords do not match.', 'error')
+        return redirect(url_for('register'))
+    try:
+        create_profile(name, email, password, access_code)
+    except ValueError as exc:
+        flash(str(exc), 'error')
+        return redirect(url_for('register'))
+
+    session['authenticated'] = True
+    session['email'] = email.lower()
+    session['password'] = password
+    flash('Profile created. You are signed in.', 'success')
+    return redirect(url_for('dashboard'))
+
+
+@app.route('/forgot-password', methods=['GET', 'POST'])
+def forgot_password():
+    """Reset password using email + lab access code (no email server required)."""
+    if session.get('authenticated'):
+        return redirect(url_for('dashboard'))
+    if request.method == 'GET':
+        return render_template('forgot_password.html')
+
+    email = request.form.get('email', '').strip()
+    password = request.form.get('password', '')
+    confirm = request.form.get('confirm_password', '')
+    access_code = request.form.get('access_code', '').strip()
+
+    if password != confirm:
+        flash('Passwords do not match.', 'error')
+        return redirect(url_for('forgot_password'))
+    try:
+        reset_password(email, password, access_code)
+    except ValueError as exc:
+        flash(str(exc), 'error')
+        return redirect(url_for('forgot_password'))
+
+    flash('Password updated. Sign in with your new password.', 'success')
     return redirect(url_for('login'))
 
 
