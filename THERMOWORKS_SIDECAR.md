@@ -1,24 +1,35 @@
 # ThermoWorks on Render (browser App Check — preferred)
 
 ThermoWorks requires a Firebase **App Check** token from reCAPTCHA Enterprise.
-Render has no desktop Chrome, so the dashboard mints the token in **your browser**
-instead of needing a lab PC.
+Their reCAPTCHA key only works on `cloud.thermoworks.com`, so a normal webpage on
+Render **cannot** mint it silently. Use either:
+
+1. **Chrome helper extension** (automatic after one install), or
+2. Manual Console paste (fallback), or
+3. Lab-PC sidecar (below)
 
 ```text
-Browser (App Check popup) → Render dashboard → ThermoWorks Cloud
+Browser (+ optional Chrome helper) → Render dashboard → ThermoWorks Cloud
 ```
 
-## How to use (no lab PC)
+## Fully automatic (recommended): Chrome helper
+
+1. On your PC open Chrome → `chrome://extensions` → Developer mode → **Load unpacked**
+2. Select `chrome_extension/thermoworks_appcheck` from this repo
+3. Open your Render URL → ThermoWorks Signals → **Refresh**
+4. Allow the popup; ThermoWorks opens and the helper sends App Check back by itself
+
+See `chrome_extension/thermoworks_appcheck/README.md`.
+
+## Manual fallback (no extension)
 
 1. Open your Render URL and sign in.
-2. Choose **ThermoWorks Signals**, enter ThermoWorks Cloud email/password.
-3. Click **Refresh** (or Run analysis). A popup opens for App Check.
-4. Allow popups if the browser blocks them.
-5. If automatic mint fails (common — reCAPTCHA is often locked to ThermoWorks’
-   domain), use the popup fallback:
-   - Open ThermoWorks Cloud
-   - Copy the capture script → paste in that tab’s DevTools Console → Enter
-6. When the popup shows success, device list / analysis continues on Render.
+2. ThermoWorks Signals → email/password → **Refresh**
+3. In the popup, script is copied and ThermoWorks opens.
+4. On that ThermoWorks tab: **F12 → Console → paste → Enter**
+5. When success appears, the dashboard continues.
+
+Tokens are cached ~1 hour, so you usually only do this once per session.
 
 Routes used:
 

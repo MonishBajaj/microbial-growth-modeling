@@ -19,7 +19,7 @@
       padding: 0.55rem 0.9rem; font-weight: 600; cursor: pointer; text-decoration: none;
     }
     button.secondary { background: #475569; }
-    textarea { width: 100%; min-height: 8rem; margin-top: 0.5rem; font-size: 0.75rem; }
+    textarea { width: 100%; min-height: 7rem; margin-top: 0.5rem; font-size: 0.75rem; }
     .hidden { display: none; }
     ol { margin: 0.5rem 0 0 1.1rem; padding: 0; color: #345; font-size: 0.9rem; }
     ol li { margin: 0.35rem 0; }
@@ -30,24 +30,30 @@
   <div class="card">
     <h1>ThermoWorks verification</h1>
     <p>
-      Solving the captcha alone does <strong>not</strong> connect the dashboard.
-      This window must receive an App Check token and send it back.
+      ThermoWorks only allows App Check from their own website, so this dashboard
+      cannot finish it silently in the page alone.
     </p>
     <p class="status" id="status">Starting…</p>
+
+    <div id="extension-panel" class="hidden">
+      <p class="ok">Chrome helper detected — finishing automatically…</p>
+      <p>A ThermoWorks tab will open briefly. Keep this window open until you see Success.</p>
+    </div>
+
     <div id="fallback" class="hidden">
       <p class="warn">
-        Automatic mint failed on this site (ThermoWorks locks reCAPTCHA to their domain).
-        Complete the 3 steps below — opening ThermoWorks without the script will not finish.
+        For fully automatic verification, install the one-time Chrome helper
+        (<code>chrome_extension/thermoworks_appcheck</code> → Load unpacked).
       </p>
-      <button type="button" id="open-and-copy">1. Copy script + open ThermoWorks</button>
+      <p>Or use the manual fallback (script already copied if the browser allows):</p>
+      <button type="button" id="open-and-copy">Copy script + open ThermoWorks</button>
       <button type="button" class="secondary" id="copy-script">Copy script only</button>
       <ol>
-        <li>On the ThermoWorks tab press <code>F12</code> (or right-click → Inspect) → <strong>Console</strong>.</li>
-        <li>Paste the script (<code>Ctrl/Cmd+V</code>) and press <strong>Enter</strong>.</li>
-        <li>Allow any captcha it triggers. Wait for the success alert.</li>
+        <li>ThermoWorks tab → <code>F12</code> → <strong>Console</strong></li>
+        <li>Paste (<code>Ctrl/Cmd+V</code>) → <strong>Enter</strong></li>
+        <li>Wait for the success alert</li>
       </ol>
       <textarea id="script" readonly></textarea>
-      <p>Keep this window open. It closes automatically when the token arrives.</p>
     </div>
   </div>
 
@@ -55,6 +61,7 @@
     const bridgeId = {{ bridge_id|tojson }};
     const statusEl = document.getElementById('status');
     const fallbackEl = document.getElementById('fallback');
+    const extensionEl = document.getElementById('extension-panel');
     const scriptEl = document.getElementById('script');
     const submitUrl = {{ submit_url|tojson }};
     const statusUrl = {{ status_url|tojson }};
@@ -62,24 +69,6 @@
     function setStatus(text, kind) {
       statusEl.textContent = text;
       statusEl.className = 'status ' + (kind || '');
-    }
-
-    async function postToken(token, ttl) {
-      const response = await fetch(submitUrl, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'X-Requested-With': 'XMLHttpRequest'
-        },
-        body: JSON.stringify({ token, ttl, bridge_id: bridgeId })
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(data.error || 'Could not store App Check token');
-      }
-      return data;
     }
 
     function notifyOpener(payload) {
@@ -129,76 +118,24 @@
       alert('Could not send token to dashboard: ' + (saved.error || save.status) + '\\nURL: ' + submitUrl);
       return;
     }
-    alert('ThermoWorks App Check captured. Return to the dashboard — Refresh should continue.');
+    alert('ThermoWorks App Check captured. Return to the dashboard.');
   })().catch((err) => alert(String(err)));
 })();`;
-    }
-
-    async function mintWithFirebase() {
-      setStatus('Requesting App Check in this browser…', '');
-      const { initializeApp } = await import('https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js');
-      const {
-        initializeAppCheck,
-        ReCaptchaEnterpriseProvider,
-        getToken
-      } = await import('https://www.gstatic.com/firebasejs/10.14.1/firebase-app-check.js');
-
-      const app = initializeApp({
-        apiKey: 'AIzaSyCf079iccUFc1k7VHdGXng22zXDy8Y3KEY',
-        authDomain: 'thermoworks-cloud-production.firebaseapp.com',
-        projectId: 'thermoworks-cloud-production',
-        storageBucket: 'thermoworks-cloud-production.appspot.com',
-        messagingSenderId: '78998049458',
-        appId: '1:78998049458:web:b41e9d405d8c7de95eefab'
-      });
-      const appCheck = initializeAppCheck(app, {
-        provider: new ReCaptchaEnterpriseProvider('6LcsqOMtAAAAAHtQqSpUGXg-KVQBJYvEILqVxHHJ'),
-        isTokenAutoRefreshEnabled: false
-      });
-      const result = await getToken(appCheck, /* forceRefresh */ true);
-      if (!result || !result.token) {
-        throw new Error('Firebase App Check returned no token');
-      }
-      await postToken(result.token, '3600s');
-      setStatus('Success. Returning to the dashboard…', 'ok');
-      notifyOpener({ ok: true });
-      setTimeout(() => window.close(), 800);
     }
 
     async function copyScript() {
       scriptEl.value = buildFallbackScript();
       try {
         await navigator.clipboard.writeText(scriptEl.value);
-        setStatus('Script copied. Paste it in the ThermoWorks Console (F12), then press Enter.', 'ok');
         return true;
       } catch (e) {
         scriptEl.focus();
         scriptEl.select();
-        setStatus('Select the script below and copy it (Ctrl/Cmd+C), then paste in ThermoWorks Console.', 'warn');
         return false;
       }
     }
 
-    function showFallback(err) {
-      const message = err || 'Automatic mint failed';
-      setStatus('Automatic mint failed: ' + message, 'warn');
-      fallbackEl.classList.remove('hidden');
-      scriptEl.value = buildFallbackScript();
-      notifyOpener({
-        ok: false,
-        fallback: true,
-        error: message
-      });
-
-      document.getElementById('copy-script').onclick = function () {
-        copyScript();
-      };
-      document.getElementById('open-and-copy').onclick = async function () {
-        await copyScript();
-        window.open('https://cloud.thermoworks.com/auth/login', '_blank');
-        setStatus('ThermoWorks opened. Paste the script in that tab’s Console (F12 → Console → Enter).', 'warn');
-      };
-
+    function startStatusPoll() {
       const timer = setInterval(async () => {
         try {
           const response = await fetch(statusUrl + '?bridge_id=' + encodeURIComponent(bridgeId), {
@@ -216,10 +153,85 @@
       }, 1200);
     }
 
-    try {
-      await mintWithFirebase();
-    } catch (err) {
-      showFallback(err && err.message ? err.message : String(err));
+    function helperInstalled() {
+      return document.documentElement.dataset.twAppcheckHelper === '1';
+    }
+
+    function requestExtensionHelp() {
+      return new Promise((resolve) => {
+        if (!helperInstalled()) {
+          resolve(false);
+          return;
+        }
+        let settled = false;
+        function onMessage(event) {
+          if (event.source !== window || !event.data || event.data.source !== 'tw-helper') {
+            return;
+          }
+          if (event.data.type !== 'tw-appcheck-helper-result') {
+            return;
+          }
+          if (settled) return;
+          settled = true;
+          window.removeEventListener('message', onMessage);
+          resolve(!!event.data.ok);
+        }
+        window.addEventListener('message', onMessage);
+        window.postMessage({
+          source: 'tw-dashboard',
+          type: 'tw-appcheck-request',
+          bridgeId,
+          submitUrl
+        }, '*');
+        setTimeout(() => {
+          if (!settled) {
+            settled = true;
+            window.removeEventListener('message', onMessage);
+            resolve(false);
+          }
+        }, 2500);
+      });
+    }
+
+    function showManualFallback() {
+      fallbackEl.classList.remove('hidden');
+      scriptEl.value = buildFallbackScript();
+      notifyOpener({ ok: false, fallback: true, error: 'manual-fallback' });
+
+      document.getElementById('copy-script').onclick = async function () {
+        const ok = await copyScript();
+        setStatus(ok
+          ? 'Script copied. Paste in ThermoWorks Console (F12).'
+          : 'Copy the script below, then paste in ThermoWorks Console (F12).', ok ? 'ok' : 'warn');
+      };
+      document.getElementById('open-and-copy').onclick = async function () {
+        await copyScript();
+        window.open('https://cloud.thermoworks.com/auth/login', '_blank');
+        setStatus('ThermoWorks opened. Paste the script in Console (F12 → Console → Enter).', 'warn');
+      };
+
+      // Auto-start the least-manual path.
+      copyScript().then(function (ok) {
+        window.open('https://cloud.thermoworks.com/auth/login', '_blank');
+        setStatus(
+          ok
+            ? 'Script copied and ThermoWorks opened. On that tab: F12 → Console → paste → Enter.'
+            : 'ThermoWorks opened. Copy the script below, then F12 → Console → paste → Enter.',
+          'warn'
+        );
+      });
+    }
+
+    setStatus('Checking for Chrome App Check helper…', '');
+    startStatusPoll();
+    const usedHelper = await requestExtensionHelp();
+    if (usedHelper) {
+      extensionEl.classList.remove('hidden');
+      setStatus('Helper is running. Waiting for ThermoWorks App Check…', '');
+      notifyOpener({ ok: false, fallback: true, error: 'extension-running' });
+    } else {
+      setStatus('No Chrome helper found — using manual fallback.', 'warn');
+      showManualFallback();
     }
   </script>
 </body>
