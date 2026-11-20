@@ -1,0 +1,259 @@
+"""Mint a Firebase App Check token for ThermoWorks Cloud.
+
+ThermoWorks enforces App Check on email/password sign-in. The token is produced
+by the same reCAPTCHA Enterprise widget the Cloud website uses, then exchanged
+inside that page. Headless Chrome is rejected, so this opens a short real
+Chrome window on the local display and caches the token until it nears expiry.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import shutil
+import signal
+import socket
+import subprocess
+import threading
+import time
+from typing import Optional, Tuple
+
+import aiohttp
+
+_PROFILE = "/tmp/microbial-thermoworks-chrome"
+_LOGIN_URL = "https://cloud.thermoworks.com/auth/login"
+_API_KEY = "AIzaSyCf079iccUFc1k7VHdGXng22zXDy8Y3KEY"
+_APP_ID = "1:78998049458:web:b41e9d405d8c7de95eefab"
+_PROJECT = "thermoworks-cloud-production"
+
+_cache_lock = threading.Lock()
+_mint_lock = threading.Lock()
+_token: Optional[str] = None
+_expires_at = 0.0
+
+_EXCHANGE_JS = r"""
+(async () => {
+  const start = Date.now();
+  let g = null;
+  while (Date.now() - start < 20000) {
+    g = window.grecaptcha && window.grecaptcha.enterprise;
+    const ids = Object.keys((window.___grecaptcha_cfg || {}).clients || {});
+    if (g && ids.length) break;
+    await new Promise(r => setTimeout(r, 250));
+  }
+  if (!g) return {ok: false, error: "reCAPTCHA did not load on cloud.thermoworks.com"};
+  const ids = Object.keys((window.___grecaptcha_cfg || {}).clients || {});
+  const widgetId = ids.length ? Number(ids[0]) : 0;
+  const recaptcha = await Promise.race([
+    new Promise((resolve, reject) => {
+      g.ready(() => {
+        g.execute(widgetId, {action: "fire_app_check"}).then(resolve).catch(reject);
+      });
+    }),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("reCAPTCHA timed out")), 15000))
+  ]);
+  const url = "https://content-firebaseappcheck.googleapis.com/v1/projects/"
+    + "%s/apps/%s:exchangeRecaptchaEnterpriseToken?key=%s";
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({recaptcha_enterprise_token: recaptcha})
+  });
+  const body = await resp.text();
+  let parsed = {};
+  try { parsed = JSON.parse(body); } catch (e) {}
+  if (!resp.ok) {
+    const message = (parsed.error && parsed.error.message) || body.slice(0, 300);
+    return {ok: false, status: resp.status, error: message};
+  }
+  return {ok: true, token: parsed.token, ttl: parsed.ttl || "3600s"};
+})()
+""" % (_PROJECT, _APP_ID, _API_KEY)
+
+
+def _cached() -> Optional[str]:
+    with _cache_lock:
+        if _token and time.time() < _expires_at - 120:
+            return _token
+    return None
+
+
+def _store(token: str, ttl_seconds: float) -> None:
+    global _token, _expires_at
+    with _cache_lock:
+        _token = token
+        _expires_at = time.time() + ttl_seconds
+
+
+def _ttl_seconds(ttl: str) -> float:
+    text = (ttl or "").strip().lower()
+    if text.endswith("s"):
+        text = text[:-1]
+    try:
+        return max(float(text), 60.0)
+    except ValueError:
+        return 3600.0
+
+
+def _free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def _stop(proc: subprocess.Popen) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            proc.kill()
+        proc.wait(timeout=5)
+
+
+async def _cdp_call(ws, pending, seq_box, method, params=None, timeout=30):
+    seq_box[0] += 1
+    seq = seq_box[0]
+    fut = asyncio.get_running_loop().create_future()
+    pending[seq] = fut
+    await ws.send_json({"id": seq, "method": method, "params": params or {}})
+    data = await asyncio.wait_for(fut, timeout)
+    if "error" in data:
+        raise RuntimeError(data["error"].get("message") or str(data["error"]))
+    return data.get("result", {})
+
+
+async def _mint() -> Tuple[str, float]:
+    if not os.environ.get("DISPLAY"):
+        raise RuntimeError(
+            "ThermoWorks sign-in needs a desktop session so Chrome can complete App Check."
+        )
+    chrome = shutil.which("google-chrome") or shutil.which("google-chrome-stable")
+    if not chrome:
+        raise RuntimeError("Google Chrome is required to sign in to ThermoWorks Cloud.")
+
+    os.makedirs(_PROFILE, exist_ok=True)
+    port = _free_port()
+    proc = subprocess.Popen(
+        [
+            chrome,
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-dev-shm-usage",
+            "--disable-extensions",
+            "--window-size=480,360",
+            "--window-position=80,80",
+            f"--user-data-dir={_PROFILE}",
+            f"--remote-debugging-port={port}",
+            _LOGIN_URL,
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    try:
+        async with aiohttp.ClientSession() as http:
+            page = None
+            deadline = time.time() + 20
+            while time.time() < deadline:
+                if proc.poll() is not None:
+                    raise RuntimeError("Chrome closed before ThermoWorks App Check could run.")
+                try:
+                    async with http.get(f"http://127.0.0.1:{port}/json/list", timeout=1) as resp:
+                        pages = await resp.json(content_type=None)
+                    page = next(
+                        (
+                            item for item in pages
+                            if item.get("type") == "page" and "thermoworks.com" in item.get("url", "")
+                        ),
+                        None,
+                    )
+                    if page and page.get("webSocketDebuggerUrl"):
+                        break
+                except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError):
+                    page = None
+                await asyncio.sleep(0.25)
+            if not page:
+                raise RuntimeError("Chrome did not open ThermoWorks Cloud.")
+
+            await asyncio.sleep(1.5)
+            async with http.ws_connect(page["webSocketDebuggerUrl"], max_msg_size=8_000_000) as ws:
+                pending = {}
+
+                async def reader():
+                    async for msg in ws:
+                        if msg.type != aiohttp.WSMsgType.TEXT:
+                            break
+                        data = json.loads(msg.data)
+                        fut = pending.get(data.get("id"))
+                        if fut and not fut.done():
+                            fut.set_result(data)
+
+                task = asyncio.create_task(reader())
+                try:
+                    result = None
+                    last_error = None
+                    for _ in range(3):
+                        try:
+                            result = await _cdp_call(
+                                ws, pending, [0],
+                                "Runtime.evaluate",
+                                {
+                                    "expression": _EXCHANGE_JS,
+                                    "awaitPromise": True,
+                                    "returnByValue": True,
+                                },
+                                timeout=40,
+                            )
+                            last_error = None
+                            break
+                        except RuntimeError as exc:
+                            last_error = exc
+                            if "context was destroyed" not in str(exc).lower():
+                                raise
+                            await asyncio.sleep(1)
+                    if last_error:
+                        raise last_error
+                finally:
+                    task.cancel()
+
+            value = (result.get("result") or {}).get("value")
+            details = result.get("exceptionDetails")
+            if details:
+                text = (details.get("exception") or {}).get("description") or details.get("text")
+                raise RuntimeError(f"ThermoWorks App Check failed: {text}")
+            if not isinstance(value, dict) or not value.get("ok"):
+                error = (value or {}).get("error") if isinstance(value, dict) else None
+                raise RuntimeError(error or "ThermoWorks App Check was rejected.")
+            token = value.get("token")
+            if not token:
+                raise RuntimeError("ThermoWorks App Check did not return a token.")
+            return token, _ttl_seconds(value.get("ttl") or "")
+    finally:
+        _stop(proc)
+
+
+def _mint_if_needed() -> str:
+    with _mint_lock:
+        cached = _cached()
+        if cached:
+            return cached
+        token, ttl = asyncio.run(_mint())
+        _store(token, ttl)
+        return token
+
+
+async def get_app_check_token() -> str:
+    """Return a cached App Check token, minting one in Chrome when needed."""
+    cached = _cached()
+    if cached:
+        return cached
+    return await asyncio.to_thread(_mint_if_needed)

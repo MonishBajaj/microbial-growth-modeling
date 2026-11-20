@@ -1,0 +1,946 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Microbial Growth Analyzer{% endblock %}
+
+{% block content %}
+<div class="page-container">
+    <div class="dashboard-header">
+        <h1>Run an analysis</h1>
+        <p>
+            Work top to bottom: choose a Ready pathogen model, pick where temperature comes from,
+            then choose what to run. Unavailable models are listed for later — they do not have
+            verified coefficients yet.
+        </p>
+    </div>
+
+    <form method="POST" action="{{ url_for('analyze') }}" id="analysis-form">
+        <div class="step-list">
+
+            <!-- Step 1 -->
+            <section class="step-card" id="model-panel">
+                <div class="step-head">
+                    <span class="step-num">1</span>
+                    <div class="step-head-text">
+                        <h2>Pathogen model</h2>
+                        <p>Select the organism and the Ready growth or cooling model to simulate.</p>
+                    </div>
+                </div>
+                <div class="step-body">
+                    <label class="field-label" id="model-bacteria-label">Bacteria</label>
+                    <div class="custom-select" id="bacteria-picker" data-select="bacteria">
+                        <button type="button" class="custom-select-trigger" id="model-bacteria-trigger"
+                                aria-labelledby="model-bacteria-label" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="custom-select-value">Loading models…</span>
+                            <span class="custom-select-chevron" aria-hidden="true"></span>
+                        </button>
+                        <ul class="custom-select-menu" id="model-bacteria-menu" role="listbox" hidden></ul>
+                        <input type="hidden" id="model-bacteria" value="">
+                    </div>
+
+                    <label class="field-label" id="model-id-label" style="margin-top:0.9rem;">Model</label>
+                    <div class="custom-select" id="model-picker" data-select="model">
+                        <button type="button" class="custom-select-trigger" id="model-id-trigger"
+                                aria-labelledby="model-id-label" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="custom-select-value">Loading models…</span>
+                            <span class="custom-select-chevron" aria-hidden="true"></span>
+                        </button>
+                        <ul class="custom-select-menu" id="model-id-menu" role="listbox" hidden></ul>
+                        <input type="hidden" name="model_id" id="model-id" value="" required>
+                    </div>
+
+                    <label class="toggle-row">
+                        <input type="checkbox" id="show-unavailable">
+                        Show unavailable models (no coefficients yet)
+                    </label>
+                    <p class="hint" id="model-status">
+                        Only Ready models can run a simulation.
+                    </p>
+                </div>
+            </section>
+
+            <!-- Step 2 -->
+            <section class="step-card">
+                <div class="step-head">
+                    <span class="step-num">2</span>
+                    <div class="step-head-text">
+                        <h2>Temperature source</h2>
+                        <p>Where the time–temperature profile comes from. Sample data needs no device.</p>
+                    </div>
+                </div>
+                <div class="step-body">
+                    <div class="source-row">
+                        <button type="button" class="source-card selected" data-source="meater" onclick="selectSource(this, 'meater')">
+                            <span class="source-card-title">MEATER Cloud</span>
+                            <span class="source-card-desc">Live probe temperatures from the signed-in MEATER account.</span>
+                        </button>
+                        <button type="button" class="source-card" data-source="signals" onclick="selectSource(this, 'signals')">
+                            <span class="source-card-title">ThermoWorks Signals</span>
+                            <span class="source-card-desc">Wi‑Fi BBQ thermometer via ThermoWorks Cloud (up to 4 channels).</span>
+                        </button>
+                        <button type="button" class="source-card" data-source="arduino_push" onclick="selectSource(this, 'arduino_push')">
+                            <span class="source-card-title">Arduino Push</span>
+                            <span class="source-card-desc">Board POSTs °C to this server — works with a public URL.</span>
+                        </button>
+                        <button type="button" class="source-card" data-source="arduino_usb" onclick="selectSource(this, 'arduino_usb')">
+                            <span class="source-card-title">Arduino USB</span>
+                            <span class="source-card-desc">Board plugged into this computer over USB serial.</span>
+                        </button>
+                        <button type="button" class="source-card" data-source="arduino_wifi" onclick="selectSource(this, 'arduino_wifi')">
+                            <span class="source-card-title">Arduino Wi‑Fi</span>
+                            <span class="source-card-desc">Board on this network serving Celsius lines.</span>
+                        </button>
+                    </div>
+                    <input type="hidden" name="source" id="selected-source" value="meater">
+
+                    <div class="device-panel" id="push-panel" hidden>
+                        <label class="field-label">Ingest URL (put this in the Arduino sketch)</label>
+                        <div class="field-row arduino-port-row">
+                            <input class="form-control" type="text" id="push-ingest-url" readonly
+                                   value="Loading…" autocomplete="off">
+                            <button type="button" class="btn btn-secondary" id="copy-push-url" onclick="copyPushUrl()">Copy</button>
+                        </div>
+                        <label class="field-label" style="margin-top:0.9rem;">Bearer token</label>
+                        <div class="field-row arduino-port-row">
+                            <input class="form-control" type="text" id="push-token" readonly value="" autocomplete="off">
+                            <button type="button" class="btn btn-secondary" onclick="refreshPushStatus()">Refresh</button>
+                        </div>
+                        <label class="field-label" for="push-device-id" style="margin-top:0.9rem;">Device ID filter (optional)</label>
+                        <input class="form-control" type="text" name="push_device_id" id="push-device-id" disabled
+                               placeholder="Leave blank for any device" autocomplete="off">
+                        <p class="hint" id="push-status">
+                            Upload <code>arduino/temperature_push/temperature_push.ino</code> with this URL and token.
+                            The board must reach this host over the internet (tunnel or deployed server).
+                        </p>
+                    </div>
+
+                    <div class="device-panel" id="signals-panel" hidden>
+                        <label class="field-label" for="tw-email">ThermoWorks Cloud email</label>
+                        <input class="form-control" type="email" name="tw_email" id="tw-email" disabled
+                               value="{{ session.get('tw_email', '') }}"
+                               placeholder="account@example.com" autocomplete="username">
+
+                        <label class="field-label" for="tw-password" style="margin-top:0.9rem;">ThermoWorks Cloud password</label>
+                        <input class="form-control" type="password" name="tw_password" id="tw-password" disabled
+                               placeholder="ThermoWorks password" autocomplete="current-password">
+
+                        <label class="field-label" for="signals-device" style="margin-top:0.9rem;">Device</label>
+                        <div class="field-row arduino-port-row">
+                            <select class="form-control" name="signals_serial" id="signals-device" disabled>
+                                <option value="">Load devices…</option>
+                            </select>
+                            <button type="button" class="btn btn-secondary" id="refresh-signals" onclick="loadSignalsDevices()">Refresh</button>
+                        </div>
+
+                        <label class="field-label" for="signals-channel" style="margin-top:0.9rem;">Channel for growth model</label>
+                        <select class="form-control" name="signals_channel" id="signals-channel" disabled>
+                            <option value="1">Channel 1</option>
+                            <option value="2">Channel 2</option>
+                            <option value="3">Channel 3</option>
+                            <option value="4">Channel 4</option>
+                        </select>
+                        <p class="hint" id="signals-status">
+                            Refresh loads devices from ThermoWorks Cloud. A Chrome window may open briefly
+                            so Firebase can confirm this is the Cloud site. The selected channel becomes
+                            the temperature series for the model (°C).
+                        </p>
+                    </div>
+
+                    <div class="device-panel" id="arduino-panel" hidden>
+                        <label class="field-label" for="arduino-port">Serial port</label>
+                        <div class="field-row arduino-port-row">
+                            <select class="form-control" name="port" id="arduino-port" disabled>
+                                <option value="">Looking for ports…</option>
+                            </select>
+                            <button type="button" class="btn btn-secondary" id="refresh-ports" onclick="loadPorts()">Refresh</button>
+                        </div>
+                        <p class="hint">Close the Arduino Serial Monitor before starting. Sketch prints one Celsius value per line at 9600 baud.</p>
+                    </div>
+
+                    <div class="device-panel" id="wifi-panel" hidden>
+                        <label class="field-label" for="wifi-board">Board on this network</label>
+                        <div class="field-row arduino-port-row">
+                            <select class="form-control" id="wifi-board" disabled>
+                                <option value="">Looking for boards…</option>
+                            </select>
+                        </div>
+                        <label class="field-label" for="wifi-host">Address</label>
+                        <div class="field-row arduino-port-row">
+                            <input class="form-control" type="text" name="wifi_host" id="wifi-host" disabled
+                                   placeholder="192.168.1.50" autocomplete="off" spellcheck="false">
+                            <button type="button" class="btn btn-secondary" id="refresh-wifi" onclick="lookupWifi()">Check</button>
+                        </div>
+                        <p class="hint" id="wifi-status">Boards appear automatically when they announce themselves. Type an address if needed.</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Step 3 -->
+            <section class="step-card">
+                <div class="step-head">
+                    <span class="step-num">3</span>
+                    <div class="step-head-text">
+                        <h2>What to run</h2>
+                        <p>Test the device first, or collect temperatures and simulate growth.</p>
+                    </div>
+                </div>
+                <div class="step-body">
+                    <div class="mode-grid">
+                        <div class="mode-card" data-mode="1" onclick="selectMode(this, '1')">
+                            <div class="mode-card-title">Quick connection test</div>
+                            <div class="mode-card-desc">Checks the selected device for ~30 seconds. Does not run the growth model.</div>
+                            <span class="mode-card-badge badge-meater">Device • ~30 sec</span>
+                        </div>
+                        <div class="mode-card" data-mode="2" onclick="selectMode(this, '2')">
+                            <div class="mode-card-title">Short analysis</div>
+                            <div class="mode-card-desc">Collect live temperatures for ~6 minutes, then run the selected model.</div>
+                            <span class="mode-card-badge badge-meater">Device • ~6 min</span>
+                        </div>
+                        <div class="mode-card" data-mode="3" onclick="selectMode(this, '3')">
+                            <div class="mode-card-title">Full analysis</div>
+                            <div class="mode-card-desc">Extended live monitoring (~8 hours), then run the selected model.</div>
+                            <span class="mode-card-badge badge-meater">Device • ~8 hours</span>
+                        </div>
+                        <div class="mode-card" data-mode="4" onclick="selectMode(this, '4')">
+                            <div class="mode-card-title">Sample data (demo)</div>
+                            <div class="mode-card-desc">Synthetic sine-wave temperatures — no device. Good for checking the pipeline.</div>
+                            <span class="mode-card-badge badge-no-device">No device</span>
+                        </div>
+                    </div>
+                    <input type="hidden" name="mode" id="selected-mode" value="">
+                </div>
+            </section>
+        </div>
+
+        <div class="run-dock">
+            <div class="run-summary" id="run-summary">
+                Choose a Ready model, a temperature source, and a run mode.
+            </div>
+            <button type="submit" class="btn-run" id="run-btn" disabled>
+                Select a mode to start
+            </button>
+        </div>
+    </form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    let selectedMode = null;
+    let selectedSource = 'meater';
+    let wifiPollTimer = null;
+    let wifiStatusFromUser = false;
+    let catalog = null;
+    let showUnavailable = false;
+    const wifiStorageKey = 'arduinoWifiHost';
+    const modelStorageKey = 'selectedModelId';
+    const wifiLookupUrl = "{{ url_for('arduino_wifi_lookup') }}";
+    const modelsUrl = "{{ url_for('api_models') }}";
+
+    const sourceLabels = {
+        meater: 'MEATER Cloud',
+        signals: 'ThermoWorks Signals',
+        arduino_push: 'Arduino Push',
+        arduino_usb: 'Arduino USB',
+        arduino_wifi: 'Arduino Wi‑Fi'
+    };
+    const signalsDevicesUrl = "{{ url_for('signals_devices') }}";
+    const pushStatusUrl = "{{ url_for('arduino_push_status') }}";
+    const signalsStorageKey = 'signalsSerial';
+    const signalsChannelKey = 'signalsChannel';
+    const modeLabels = {
+        '1': 'Quick connection test',
+        '2': 'Short analysis',
+        '3': 'Full analysis',
+        '4': 'Sample data (demo)'
+    };
+
+    function setModelStatus(message, kind) {
+        const status = document.getElementById('model-status');
+        status.textContent = message;
+        status.className = 'hint' + (kind ? ' ' + kind : '');
+    }
+
+    function setWifiStatus(message, kind) {
+        const status = document.getElementById('wifi-status');
+        status.textContent = message;
+        status.className = 'hint' + (kind ? ' wifi-status-' + kind : '');
+    }
+
+    function updateRunSummary() {
+        const summary = document.getElementById('run-summary');
+        const bacteria = document.getElementById('model-bacteria').value || '—';
+        const modelTrigger = document.querySelector('#model-picker .custom-select-value');
+        const modelText = (modelTrigger && modelTrigger.textContent) || '—';
+        const source = sourceLabels[selectedSource] || selectedSource;
+        const mode = selectedMode ? modeLabels[selectedMode] : 'not chosen';
+        summary.innerHTML =
+            '<strong>' + bacteria + '</strong><span class="sep">·</span>' +
+            modelText + '<span class="sep">·</span>' +
+            source + '<span class="sep">·</span>' +
+            mode;
+    }
+
+    function closeAllCustomSelects(except) {
+        document.querySelectorAll('.custom-select').forEach(function (wrap) {
+            if (except && wrap === except) {
+                return;
+            }
+            const menu = wrap.querySelector('.custom-select-menu');
+            const trigger = wrap.querySelector('.custom-select-trigger');
+            if (menu) {
+                menu.hidden = true;
+            }
+            if (trigger) {
+                trigger.setAttribute('aria-expanded', 'false');
+            }
+            wrap.classList.remove('open');
+        });
+    }
+
+    function setCustomSelectLabel(wrapId, label) {
+        const wrap = document.getElementById(wrapId);
+        wrap.querySelector('.custom-select-value').textContent = label;
+    }
+
+    function fillBacteriaMenu(selectedName) {
+        const menu = document.getElementById('model-bacteria-menu');
+        const hidden = document.getElementById('model-bacteria');
+        menu.innerHTML = '';
+        (catalog.bacteria || []).forEach(function (name) {
+            const models = catalog.models_by_bacteria[name] || [];
+            const hasReady = models.some(function (m) { return m.ready; });
+            if (!showUnavailable && !hasReady) {
+                return;
+            }
+            const li = document.createElement('li');
+            li.setAttribute('role', 'option');
+            li.dataset.value = name;
+            li.textContent = name + (hasReady ? '' : ' (unavailable only)');
+            if (name === selectedName) {
+                li.classList.add('selected');
+                li.setAttribute('aria-selected', 'true');
+            }
+            li.addEventListener('click', function () {
+                hidden.value = name;
+                setCustomSelectLabel('bacteria-picker', name);
+                closeAllCustomSelects();
+                fillModelOptions(name);
+                updateRunSummary();
+            });
+            menu.appendChild(li);
+        });
+        hidden.value = selectedName;
+        setCustomSelectLabel('bacteria-picker', selectedName || 'Choose bacteria');
+    }
+
+    function fillModelOptions(bacteria) {
+        const menu = document.getElementById('model-id-menu');
+        const hidden = document.getElementById('model-id');
+        const saved = localStorage.getItem(modelStorageKey) || (catalog && catalog.default_model_id) || '';
+        let models = (catalog.models_by_bacteria[bacteria] || []);
+        if (!showUnavailable) {
+            models = models.filter(function (m) { return m.ready; });
+        }
+        menu.innerHTML = '';
+
+        let selectedId = '';
+        models.forEach(function (model) {
+            const li = document.createElement('li');
+            li.setAttribute('role', 'option');
+            const label = (model.ready ? 'Ready — ' : 'Unavailable — ') + model.label;
+            li.textContent = label;
+            li.dataset.value = model.ready ? model.id : '';
+            if (!model.ready) {
+                li.classList.add('disabled');
+                li.setAttribute('aria-disabled', 'true');
+            }
+            if (model.ready && (model.id === saved || (!selectedId && model.id === catalog.default_model_id))) {
+                selectedId = model.id;
+            }
+            li.addEventListener('click', function () {
+                if (!model.ready) {
+                    setModelStatus(model.reason || 'Coefficients are not available for this model yet.', 'warn');
+                    return;
+                }
+                hidden.value = model.id;
+                setCustomSelectLabel('model-picker', label);
+                menu.querySelectorAll('[role="option"]').forEach(function (el) {
+                    el.classList.toggle('selected', el === li);
+                });
+                closeAllCustomSelects();
+                onModelChange();
+                updateRunSummary();
+            });
+            menu.appendChild(li);
+        });
+
+        if (!selectedId) {
+            const firstReady = models.find(function (m) { return m.ready; });
+            if (firstReady) {
+                selectedId = firstReady.id;
+            }
+        }
+
+        hidden.value = selectedId || '';
+        const selectedModel = models.find(function (m) { return m.id === selectedId; });
+        if (selectedModel) {
+            const label = 'Ready — ' + selectedModel.label;
+            setCustomSelectLabel('model-picker', label);
+            menu.querySelectorAll('[role="option"]').forEach(function (el) {
+                el.classList.toggle('selected', el.dataset.value === selectedId);
+            });
+        } else {
+            setCustomSelectLabel('model-picker', showUnavailable
+                ? 'No ready model — enable a Ready entry or pick another bacteria'
+                : 'No ready model for this bacteria');
+        }
+        onModelChange();
+        updateRunSummary();
+    }
+
+    function onModelChange() {
+        const modelId = document.getElementById('model-id').value;
+        const bacteria = document.getElementById('model-bacteria').value;
+        const models = (catalog && catalog.models_by_bacteria[bacteria]) || [];
+        const model = models.find(function (m) { return m.id === modelId; });
+        if (!model) {
+            setModelStatus('Choose a Ready model before running analysis (except Quick connection test).', 'warn');
+            return;
+        }
+        localStorage.setItem(modelStorageKey, model.id);
+        let msg = model.citation || 'Ready model with verified coefficients.';
+        if (model.defaults && model.defaults.note) {
+            msg += ' ' + model.defaults.note;
+        }
+        setModelStatus(msg, 'ok');
+    }
+
+    function wireCustomSelect(wrapId) {
+        const wrap = document.getElementById(wrapId);
+        const trigger = wrap.querySelector('.custom-select-trigger');
+        const menu = wrap.querySelector('.custom-select-menu');
+        trigger.addEventListener('click', function () {
+            const willOpen = menu.hidden;
+            closeAllCustomSelects(willOpen ? wrap : null);
+            menu.hidden = !willOpen;
+            trigger.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+            wrap.classList.toggle('open', willOpen);
+        });
+    }
+
+    async function loadModelCatalog() {
+        try {
+            const response = await fetch(modelsUrl);
+            if (!response.ok) {
+                throw new Error('catalog failed');
+            }
+            catalog = await response.json();
+            const saved = localStorage.getItem(modelStorageKey) || catalog.default_model_id;
+            let initialBacteria = catalog.bacteria[0];
+            catalog.bacteria.forEach(function (name) {
+                const models = catalog.models_by_bacteria[name] || [];
+                if (models.some(function (m) { return m.id === saved; })) {
+                    initialBacteria = name;
+                }
+            });
+            // Prefer a bacteria that has a ready model when hiding unavailable.
+            if (!showUnavailable) {
+                const readyBact = catalog.bacteria.find(function (name) {
+                    return (catalog.models_by_bacteria[name] || []).some(function (m) { return m.ready; });
+                });
+                if (readyBact && !(catalog.models_by_bacteria[initialBacteria] || []).some(function (m) { return m.ready; })) {
+                    initialBacteria = readyBact;
+                }
+            }
+            fillBacteriaMenu(initialBacteria);
+            fillModelOptions(initialBacteria);
+        } catch (err) {
+            setCustomSelectLabel('bacteria-picker', 'Could not load models');
+            setCustomSelectLabel('model-picker', 'Could not load models');
+            setModelStatus('Could not load the pathogen model catalog.', 'warn');
+        }
+    }
+
+    wireCustomSelect('bacteria-picker');
+    wireCustomSelect('model-picker');
+    document.addEventListener('click', function (event) {
+        if (!event.target.closest('.custom-select')) {
+            closeAllCustomSelects();
+        }
+    });
+    document.getElementById('show-unavailable').addEventListener('change', function () {
+        showUnavailable = this.checked;
+        const current = document.getElementById('model-bacteria').value;
+        fillBacteriaMenu(current);
+        fillModelOptions(current);
+    });
+    loadModelCatalog();
+
+    function selectSource(card, source) {
+        document.querySelectorAll('.source-card').forEach(c => c.classList.remove('selected'));
+        card.classList.add('selected');
+        selectedSource = source;
+        document.getElementById('selected-source').value = source;
+
+        const usbPanel = document.getElementById('arduino-panel');
+        const portSelect = document.getElementById('arduino-port');
+        const wifiPanel = document.getElementById('wifi-panel');
+        const wifiHost = document.getElementById('wifi-host');
+        const wifiBoard = document.getElementById('wifi-board');
+        const signalsPanel = document.getElementById('signals-panel');
+        const pushPanel = document.getElementById('push-panel');
+        const signalsActive = source === 'signals';
+        const pushActive = source === 'arduino_push';
+
+        usbPanel.hidden = source !== 'arduino_usb';
+        portSelect.disabled = source !== 'arduino_usb';
+        wifiPanel.hidden = source !== 'arduino_wifi';
+        wifiHost.disabled = source !== 'arduino_wifi';
+        wifiBoard.disabled = source !== 'arduino_wifi';
+        signalsPanel.hidden = !signalsActive;
+        pushPanel.hidden = !pushActive;
+        document.getElementById('push-device-id').disabled = !pushActive;
+        ['tw-email', 'tw-password', 'signals-device', 'signals-channel'].forEach(function (id) {
+            document.getElementById(id).disabled = !signalsActive;
+        });
+
+        if (source === 'arduino_usb') {
+            loadPorts();
+        }
+        if (signalsActive) {
+            const savedCh = localStorage.getItem(signalsChannelKey);
+            if (savedCh) {
+                document.getElementById('signals-channel').value = savedCh;
+            }
+        }
+        if (pushActive) {
+            refreshPushStatus();
+        }
+        watchWifi(source === 'arduino_wifi');
+        updateRunSummary();
+    }
+
+    async function refreshPushStatus() {
+        const urlInput = document.getElementById('push-ingest-url');
+        const tokenInput = document.getElementById('push-token');
+        const status = document.getElementById('push-status');
+        try {
+            const response = await fetch(pushStatusUrl);
+            if (!response.ok) {
+                throw new Error('status failed');
+            }
+            const data = await response.json();
+            const fallback = window.location.origin + (data.ingest_path || '/api/arduino/ingest');
+            urlInput.value = data.ingest_url || fallback;
+            tokenInput.value = data.token || '';
+            const devices = data.devices || [];
+            if (!devices.length) {
+                status.textContent = 'No board has posted yet. Upload the push sketch with this URL and token.';
+                status.className = 'hint warn';
+            } else {
+                const d = devices[0];
+                status.textContent = 'Last from ' + d.device_id + ': ' +
+                    Number(d.celsius).toFixed(1) + '°C (' + d.age_seconds + 's ago). ' +
+                    (data.readings_buffered || 0) + ' samples buffered.';
+                status.className = 'hint ok';
+            }
+        } catch (err) {
+            urlInput.value = window.location.origin + '/api/arduino/ingest';
+            status.textContent = 'Could not load push status. Sign in and try Refresh.';
+            status.className = 'hint warn';
+        }
+        updateRunSummary();
+    }
+
+    function copyPushUrl() {
+        const urlInput = document.getElementById('push-ingest-url');
+        urlInput.select();
+        navigator.clipboard.writeText(urlInput.value).catch(function () {});
+    }
+
+    function setSignalsStatus(text, kind) {
+        const el = document.getElementById('signals-status');
+        el.textContent = text;
+        el.className = 'hint' + (kind ? ' ' + kind : '');
+    }
+
+    async function loadSignalsDevices() {
+        const email = document.getElementById('tw-email').value.trim();
+        const password = document.getElementById('tw-password').value;
+        const select = document.getElementById('signals-device');
+        const channelSelect = document.getElementById('signals-channel');
+
+        if (!email || !password) {
+            setSignalsStatus('Enter ThermoWorks Cloud email and password, then refresh.', 'warn');
+            return;
+        }
+
+        setSignalsStatus('Looking up ThermoWorks devices… A Chrome window may open briefly to sign in.', '');
+        select.innerHTML = '';
+        const waiting = document.createElement('option');
+        waiting.value = '';
+        waiting.textContent = 'Loading…';
+        select.appendChild(waiting);
+
+        try {
+            const response = await fetch(signalsDevicesUrl, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({email: email, password: password})
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || 'device list failed');
+            }
+            const devices = data.devices || [];
+            select.innerHTML = '';
+            if (!devices.length) {
+                const empty = document.createElement('option');
+                empty.value = '';
+                empty.textContent = 'No devices on this account';
+                select.appendChild(empty);
+                setSignalsStatus('No ThermoWorks devices found. Confirm Signals is online in the app.', 'warn');
+                return;
+            }
+
+            const saved = localStorage.getItem(signalsStorageKey) || '';
+            devices.forEach(function (device) {
+                const option = document.createElement('option');
+                option.value = device.serial;
+                const chCount = (device.channels || []).length;
+                option.textContent = (device.label || device.serial) +
+                    ' — ' + (device.type || 'device') +
+                    (chCount ? ' (' + chCount + ' ch)' : '');
+                option.dataset.channels = JSON.stringify(device.channels || []);
+                select.appendChild(option);
+            });
+            if (saved && devices.some(function (d) { return d.serial === saved; })) {
+                select.value = saved;
+            }
+            fillSignalsChannels(select.selectedOptions[0]);
+            setSignalsStatus('Found ' + devices.length + ' device(s). Pick the channel used for the growth model.', 'ok');
+            updateRunSummary();
+        } catch (err) {
+            select.innerHTML = '';
+            const failed = document.createElement('option');
+            failed.value = '';
+            failed.textContent = 'Could not load devices';
+            select.appendChild(failed);
+            setSignalsStatus(err.message || 'Could not load ThermoWorks devices.', 'warn');
+        }
+    }
+
+    function fillSignalsChannels(option) {
+        const channelSelect = document.getElementById('signals-channel');
+        const previous = channelSelect.value || localStorage.getItem(signalsChannelKey) || '1';
+        let channels = [];
+        try {
+            channels = option ? JSON.parse(option.dataset.channels || '[]') : [];
+        } catch (e) {
+            channels = [];
+        }
+        channelSelect.innerHTML = '';
+        if (!channels.length) {
+            for (let n = 1; n <= 4; n++) {
+                const opt = document.createElement('option');
+                opt.value = String(n);
+                opt.textContent = 'Channel ' + n;
+                channelSelect.appendChild(opt);
+            }
+        } else {
+            channels.forEach(function (ch) {
+                const opt = document.createElement('option');
+                opt.value = String(ch.number);
+                let label = ch.label || ('Channel ' + ch.number);
+                if (ch.value_c != null) {
+                    label += ' — ' + Number(ch.value_c).toFixed(1) + '°C';
+                }
+                opt.textContent = label;
+                channelSelect.appendChild(opt);
+            });
+        }
+        if ([].some.call(channelSelect.options, function (o) { return o.value === previous; })) {
+            channelSelect.value = previous;
+        }
+    }
+
+    async function loadPorts() {
+        const select = document.getElementById('arduino-port');
+        select.innerHTML = '';
+        const waiting = document.createElement('option');
+        waiting.value = '';
+        waiting.textContent = 'Looking for ports…';
+        select.appendChild(waiting);
+
+        try {
+            const response = await fetch("{{ url_for('arduino_ports') }}");
+            if (!response.ok) {
+                throw new Error('port list failed');
+            }
+            const ports = await response.json();
+            select.innerHTML = '';
+            if (!ports.length) {
+                const empty = document.createElement('option');
+                empty.value = '';
+                empty.textContent = 'No serial ports found';
+                select.appendChild(empty);
+                return;
+            }
+            ports.forEach(function (item) {
+                const option = document.createElement('option');
+                option.value = item.port;
+                option.textContent = item.port + ' — ' + item.description;
+                select.appendChild(option);
+            });
+        } catch (err) {
+            select.innerHTML = '';
+            const failed = document.createElement('option');
+            failed.value = '';
+            failed.textContent = 'Could not list serial ports';
+            select.appendChild(failed);
+        }
+        updateRunSummary();
+    }
+
+    function boardLabel(board) {
+        if (board.host && board.ip) {
+            return board.host.replace(/\.$/, '') + ' (' + board.ip + ')';
+        }
+        return board.ip || board.host || 'board';
+    }
+
+    function watchWifi(active) {
+        if (wifiPollTimer) {
+            clearInterval(wifiPollTimer);
+            wifiPollTimer = null;
+        }
+        if (!active) {
+            return;
+        }
+        const input = document.getElementById('wifi-host');
+        const saved = localStorage.getItem(wifiStorageKey) || '';
+        if (!input.value && saved && saved !== 'arduino-temp.local') {
+            input.value = saved;
+        }
+        refreshBoards();
+        wifiPollTimer = setInterval(refreshBoards, 2000);
+    }
+
+    async function refreshBoards() {
+        const select = document.getElementById('wifi-board');
+        const input = document.getElementById('wifi-host');
+        try {
+            const response = await fetch(wifiLookupUrl);
+            if (!response.ok) {
+                throw new Error('lookup failed');
+            }
+            const data = await response.json();
+            const boards = data.boards || [];
+            const previous = select.value;
+            const typed = input.value.trim();
+            select.innerHTML = '';
+
+            if (!boards.length) {
+                const empty = document.createElement('option');
+                empty.value = '';
+                empty.textContent = data.error ? 'Discovery unavailable' : 'No boards found yet';
+                select.appendChild(empty);
+                if (!typed && !wifiStatusFromUser) {
+                    setWifiStatus(
+                        data.error || 'Waiting for a board to announce itself on this network…',
+                        data.error ? 'warn' : ''
+                    );
+                }
+                return;
+            }
+
+            boards.forEach(function (board) {
+                const option = document.createElement('option');
+                option.value = board.ip;
+                option.textContent = boardLabel(board);
+                select.appendChild(option);
+            });
+
+            const typedMatch = boards.find(function (board) {
+                const host = (board.host || '').replace(/\.$/, '');
+                return board.ip === typed || host === typed;
+            });
+            if (boards.some(function (board) { return board.ip === previous; })) {
+                select.value = previous;
+            } else if (typedMatch) {
+                select.value = typedMatch.ip;
+            } else if (boards.length === 1 && (!typed || typed === 'arduino-temp.local')) {
+                select.value = boards[0].ip;
+                input.value = boards[0].ip;
+                localStorage.setItem(wifiStorageKey, boards[0].ip);
+            }
+
+            const selected = boards.find(function (board) { return board.ip === select.value; });
+            const shown = input.value.trim();
+            if (selected && shown === selected.ip) {
+                wifiStatusFromUser = false;
+                setWifiStatus('Found ' + boardLabel(selected) + ' on port ' + selected.port + '.', 'ok');
+            } else if (!shown && !wifiStatusFromUser) {
+                setWifiStatus('More than one board is on this network. Choose one.', '');
+            }
+        } catch (err) {
+            if (!wifiStatusFromUser) {
+                setWifiStatus('Could not look for boards. Type an address and choose Check.', 'warn');
+            }
+        }
+    }
+
+    async function lookupWifi() {
+        const input = document.getElementById('wifi-host');
+        const host = input.value.trim();
+        if (!host) {
+            wifiStatusFromUser = false;
+            refreshBoards();
+            return;
+        }
+        wifiStatusFromUser = true;
+        setWifiStatus('Checking ' + host + '…', '');
+
+        try {
+            const response = await fetch(wifiLookupUrl + '?host=' + encodeURIComponent(host));
+            if (!response.ok) {
+                throw new Error('lookup failed');
+            }
+            const board = (await response.json()).lookup || {};
+            if (board.found && board.reachable) {
+                const where = board.ip && board.ip !== board.host
+                    ? board.host + ' — ' + board.ip
+                    : board.host;
+                if (board.ip) {
+                    input.value = board.ip;
+                }
+                setWifiStatus('Found ' + where + ' on port ' + board.port + '.', 'ok');
+                localStorage.setItem(wifiStorageKey, input.value.trim());
+                return;
+            }
+            if (board.found) {
+                setWifiStatus(
+                    'Found ' + board.host + ' (' + board.ip + '), but it is not serving temperatures on port ' + board.port + '.',
+                    'warn'
+                );
+                return;
+            }
+            setWifiStatus(
+                'Could not find ' + board.host + '. Use the address printed by the board on the serial line.',
+                'warn'
+            );
+        } catch (err) {
+            setWifiStatus('Could not look up the board. Enter its address and try again.', 'warn');
+        }
+    }
+
+    function selectMode(card, mode) {
+        document.querySelectorAll('.mode-card').forEach(c => c.classList.remove('selected'));
+        card.classList.add('selected');
+        selectedMode = mode;
+        document.getElementById('selected-mode').value = mode;
+
+        const btn = document.getElementById('run-btn');
+        btn.disabled = false;
+        const labels = {
+            '1': 'Run connection test',
+            '2': 'Run short analysis',
+            '3': 'Run full analysis',
+            '4': 'Run sample analysis'
+        };
+        btn.textContent = labels[mode] || 'Run analysis';
+        updateRunSummary();
+    }
+
+    document.getElementById('analysis-form').addEventListener('submit', function (e) {
+        if (!selectedMode) {
+            e.preventDefault();
+            return;
+        }
+
+        if (selectedMode !== '1') {
+            const modelId = document.getElementById('model-id').value;
+            if (!modelId) {
+                e.preventDefault();
+                alert('Choose a Ready bacteria → model before running analysis.');
+                return;
+            }
+        }
+
+        if (selectedMode !== '4' && selectedSource === 'arduino_usb') {
+            const port = document.getElementById('arduino-port').value;
+            if (!port) {
+                e.preventDefault();
+                alert('Plug in the Arduino, then choose a serial port.');
+                return;
+            }
+        }
+
+        if (selectedMode !== '4' && selectedSource === 'arduino_wifi') {
+            const wifiHost = document.getElementById('wifi-host');
+            if (!wifiHost.value.trim()) {
+                e.preventDefault();
+                alert('Wait for the board to appear, or type its address.');
+                return;
+            }
+            localStorage.setItem(wifiStorageKey, wifiHost.value.trim());
+        }
+
+        if (selectedMode !== '4' && selectedSource === 'signals') {
+            const twEmail = document.getElementById('tw-email').value.trim();
+            const twPassword = document.getElementById('tw-password').value;
+            if (!twEmail || !twPassword) {
+                e.preventDefault();
+                alert('Enter your ThermoWorks Cloud email and password.');
+                return;
+            }
+            const serial = document.getElementById('signals-device').value;
+            if (serial) {
+                localStorage.setItem(signalsStorageKey, serial);
+            }
+            localStorage.setItem(signalsChannelKey, document.getElementById('signals-channel').value);
+        }
+
+        const overlay = document.getElementById('loading-overlay');
+        const title = document.getElementById('loading-title');
+        const detail = document.getElementById('loading-detail');
+        const deviceLabel = sourceLabels[selectedSource] || 'MEATER';
+
+        const loadingMessages = {
+            '1': ['Testing connection…', 'Connecting to ' + deviceLabel + ' (~30 seconds)'],
+            '2': ['Running short analysis…', 'Collecting ' + deviceLabel + ' temperatures (~6 minutes)'],
+            '3': ['Running full analysis…', 'Extended ' + deviceLabel + ' collection (~8 hours)'],
+            '4': ['Analyzing sample data…', 'Running growth simulation on synthetic temperatures']
+        };
+
+        title.textContent = loadingMessages[selectedMode][0];
+        detail.textContent = loadingMessages[selectedMode][1];
+        overlay.classList.add('active');
+    });
+
+    document.getElementById('wifi-board').addEventListener('change', function () {
+        const input = document.getElementById('wifi-host');
+        if (!this.value) {
+            return;
+        }
+        wifiStatusFromUser = false;
+        input.value = this.value;
+        localStorage.setItem(wifiStorageKey, this.value);
+        const label = this.options[this.selectedIndex].textContent;
+        setWifiStatus('Found ' + label + '.', 'ok');
+        updateRunSummary();
+    });
+
+    document.getElementById('signals-device').addEventListener('change', function () {
+        if (this.value) {
+            localStorage.setItem(signalsStorageKey, this.value);
+        }
+        fillSignalsChannels(this.selectedOptions[0]);
+        updateRunSummary();
+    });
+
+    document.getElementById('signals-channel').addEventListener('change', function () {
+        localStorage.setItem(signalsChannelKey, this.value);
+        updateRunSummary();
+    });
+</script>
+{% endblock %}

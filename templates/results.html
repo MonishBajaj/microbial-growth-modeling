@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}Results — Microbial Growth Analyzer{% endblock %}
+
+{% block content %}
+<div class="page-container">
+    {% if error %}
+    <div class="error-card">
+        <h2>Analysis failed</h2>
+        <p style="margin-top:0.75rem; color:var(--ink-muted);">{{ error }}</p>
+        <div class="results-actions">
+            <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">Back to dashboard</a>
+        </div>
+    </div>
+    {% else %}
+    <div class="results-header">
+        <h1>Results</h1>
+        <p>{{ mode_name }}</p>
+    </div>
+
+    {% if image_data %}
+    <div class="result-image-container">
+        <img src="data:image/png;base64,{{ image_data }}" alt="Microbial growth analysis chart">
+    </div>
+    {% endif %}
+
+    {% if stats %}
+    <div class="stats-grid">
+        {% if stats.final_population is defined %}
+        <div class="stat-card">
+            <div class="stat-value">{{ "%.2f"|format(stats.final_population) }}</div>
+            <div class="stat-label">Final population (log CFU/g)</div>
+        </div>
+        {% endif %}
+        {% if stats.temp_min is defined %}
+        <div class="stat-card">
+            <div class="stat-value">{{ "%.1f"|format(stats.temp_min) }}°C</div>
+            <div class="stat-label">Min temperature</div>
+        </div>
+        {% endif %}
+        {% if stats.temp_max is defined %}
+        <div class="stat-card">
+            <div class="stat-value">{{ "%.1f"|format(stats.temp_max) }}°C</div>
+            <div class="stat-label">Max temperature</div>
+        </div>
+        {% endif %}
+        {% if stats.readings is defined %}
+        <div class="stat-card">
+            <div class="stat-value">{{ stats.readings }}</div>
+            <div class="stat-label">Readings</div>
+        </div>
+        {% endif %}
+        {% if stats.duration is defined %}
+        <div class="stat-card">
+            <div class="stat-value">{{ stats.duration }}</div>
+            <div class="stat-label">Duration</div>
+        </div>
+        {% endif %}
+        {% if stats.data_source is defined %}
+        <div class="stat-card">
+            <div class="stat-value" style="font-size:1rem;">{{ stats.data_source }}</div>
+            <div class="stat-label">Data source</div>
+        </div>
+        {% endif %}
+        {% if stats.bacteria is defined %}
+        <div class="stat-card">
+            <div class="stat-value" style="font-size:1rem;">{{ stats.bacteria }}</div>
+            <div class="stat-label">Bacteria</div>
+        </div>
+        {% endif %}
+        {% if stats.model_label is defined %}
+        <div class="stat-card">
+            <div class="stat-value" style="font-size:0.95rem;">{{ stats.model_label }}</div>
+            <div class="stat-label">Model</div>
+        </div>
+        {% endif %}
+    </div>
+    {% if stats.citation %}
+    <p class="hint">{{ stats.citation }}</p>
+    {% endif %}
+    {% endif %}
+
+    {% if connection_result is defined %}
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="stat-value">{{ 'Connected' if connection_result else 'Failed' }}</div>
+            <div class="stat-label">Device connection</div>
+        </div>
+        {% if readings_count is defined %}
+        <div class="stat-card">
+            <div class="stat-value">{{ readings_count }}</div>
+            <div class="stat-label">Readings collected</div>
+        </div>
+        {% endif %}
+        {% if avg_temps is defined %}
+        <div class="stat-card">
+            <div class="stat-value">{{ avg_temps }}</div>
+            <div class="stat-label">Average temperatures</div>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {% if logs %}
+    <div class="status-card" style="max-width:100%; margin-top:1rem;">
+        <h2 style="font-size:1rem;">Analysis log</h2>
+        <div class="status-log">
+            {% for log in logs %}
+            <div class="log-line">{{ log }}</div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+    <div class="results-actions">
+        <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">Back to dashboard</a>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

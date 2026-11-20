@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Microbial growth modeling with live temperature sources — MEATER, ThermoWorks Signals, Arduino Push, Arduino USB, and Arduino Wi‑Fi.">
+    <title>{% block title %}Microbial Growth Analyzer{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <nav class="navbar">
+        <a class="navbar-brand" href="{{ url_for('dashboard') }}">
+            <span>Microbial Growth Analyzer</span>
+        </a>
+        <div class="navbar-actions">
+            {% if session.get('authenticated') %}
+                <span>{{ session.get('email', '') }}</span>
+                <a href="{{ url_for('logout') }}" class="btn-nav">Log out</a>
+            {% endif %}
+        </div>
+    </nav>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            <div class="page-container" style="padding-bottom:0;">
+                {% for category, message in messages %}
+                    <div class="flash-message flash-{{ category }}">
+                        {{ message }}
+                    </div>
+                {% endfor %}
+            </div>
+        {% endif %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+
+    <div id="loading-overlay" class="loading-overlay">
+        <div class="spinner"></div>
+        <div class="loading-text">
+            <strong id="loading-title">Running analysis…</strong>
+            <span id="loading-detail">This may take a moment</span>
+        </div>
+    </div>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>
