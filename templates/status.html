@@ -9,9 +9,21 @@
             Please wait while your job is processed.
         </p>
 
+        <div class="run-timer" id="run-timer" aria-live="polite">
+            <div class="run-timer-remaining">
+                <span class="run-timer-label">Time remaining</span>
+                <strong id="timer-remaining">—:—:—</strong>
+            </div>
+            <div class="run-timer-meta">
+                <span>Elapsed <strong id="timer-elapsed">0:00</strong></span>
+                <span>Total <strong id="timer-total">—</strong></span>
+            </div>
+        </div>
+
         <div class="progress-bar-wrapper">
             <div class="progress-bar" id="progress-bar"></div>
         </div>
+        <p class="progress-pct" id="progress-pct">0%</p>
 
         <div class="status-log" id="status-log">
             {% for log in logs %}
@@ -27,12 +39,67 @@
     const taskId = "{{ task_id }}";
     const logEl = document.getElementById('status-log');
     const progressBar = document.getElementById('progress-bar');
-    let progress = 10;
+    const progressPct = document.getElementById('progress-pct');
+    const statusText = document.getElementById('status-text');
+    const remainingEl = document.getElementById('timer-remaining');
+    const elapsedEl = document.getElementById('timer-elapsed');
+    const totalEl = document.getElementById('timer-total');
+
+    let lastPayload = null;
+    let tickTimer = null;
+
+    function pad(n) {
+        return String(Math.max(0, Math.floor(n))).padStart(2, '0');
+    }
+
+    function formatDuration(totalSeconds) {
+        const s = Math.max(0, Math.floor(totalSeconds || 0));
+        const hours = Math.floor(s / 3600);
+        const minutes = Math.floor((s % 3600) / 60);
+        const seconds = s % 60;
+        if (hours > 0) {
+            return hours + ':' + pad(minutes) + ':' + pad(seconds);
+        }
+        return minutes + ':' + pad(seconds);
+    }
+
+    function renderTimer(payload) {
+        if (!payload) {
+            return;
+        }
+        const duration = Number(payload.duration_seconds || 0);
+        const startedAt = Number(payload.started_at || 0);
+        const now = Date.now() / 1000;
+        const elapsed = Math.max(0, now - startedAt);
+        let remaining = duration > 0 ? Math.max(0, Math.ceil(duration - elapsed)) : null;
+        let pct = duration > 0 ? Math.min(95, (elapsed / duration) * 100) : 10;
+
+        if (payload.status === 'simulating') {
+            remaining = 0;
+            pct = 97;
+            statusText.textContent = 'Collection finished — running growth simulation…';
+        } else if (payload.done) {
+            remaining = 0;
+            pct = 100;
+            statusText.textContent = payload.status === 'error'
+                ? 'Finished with an error.'
+                : 'Finished. Opening results…';
+        } else if (payload.mode_label) {
+            statusText.textContent = payload.mode_label + ' in progress. Temperatures are still being collected.';
+        }
+
+        remainingEl.textContent = remaining == null ? '—' : formatDuration(remaining);
+        elapsedEl.textContent = formatDuration(elapsed);
+        totalEl.textContent = duration > 0 ? formatDuration(duration) : '—';
+        progressBar.style.width = pct + '%';
+        progressPct.textContent = Math.round(pct) + '%';
+    }
 
     function poll() {
         fetch(`/api/status/${taskId}`)
             .then(res => res.json())
             .then(data => {
+                lastPayload = data;
                 logEl.innerHTML = '';
                 (data.logs || []).forEach(line => {
                     const div = document.createElement('div');
@@ -41,12 +108,15 @@
                     logEl.appendChild(div);
                 });
                 logEl.scrollTop = logEl.scrollHeight;
-
-                if (progress < 90) progress += 3;
-                progressBar.style.width = progress + '%';
+                renderTimer(data);
 
                 if (data.done) {
+                    if (tickTimer) {
+                        clearInterval(tickTimer);
+                        tickTimer = null;
+                    }
                     progressBar.style.width = '100%';
+                    progressPct.textContent = '100%';
                     setTimeout(() => { window.location.reload(); }, 600);
                 } else {
                     setTimeout(poll, 2000);
@@ -56,6 +126,10 @@
                 setTimeout(poll, 3000);
             });
     }
+
+    tickTimer = setInterval(function () {
+        renderTimer(lastPayload);
+    }, 1000);
 
     poll();
 </script>

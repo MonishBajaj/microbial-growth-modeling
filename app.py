@@ -760,11 +760,26 @@ def analyze():
             session['tw_email'] = tw_email
             session['tw_password'] = tw_password
 
+        # Collection window by mode (simulation after collect is usually short).
+        if mode == '1':
+            duration_hours = 30 / 3600.0
+            mode_label = 'Quick connection test'
+        elif mode == '2':
+            duration_hours = 0.1
+            mode_label = 'Short analysis'
+        else:
+            duration_hours = 8.0
+            mode_label = 'Full analysis'
+        duration_seconds = int(duration_hours * 3600)
+
         task_id = str(uuid.uuid4())
         background_tasks[task_id] = {
             'status': 'starting',
             'result': None,
             'logs': [],
+            'started_at': time.time(),
+            'duration_seconds': duration_seconds,
+            'mode_label': mode_label,
         }
 
         if source == 'arduino_usb':
@@ -898,10 +913,33 @@ def api_task_status(task_id):
     task = background_tasks.get(task_id)
     if not task:
         return jsonify({'error': 'not_found'}), 404
+
+    started_at = float(task.get('started_at') or time.time())
+    duration_seconds = int(task.get('duration_seconds') or 0)
+    elapsed = max(0.0, time.time() - started_at)
+    remaining = max(0, int(duration_seconds - elapsed)) if duration_seconds else None
+    if duration_seconds > 0:
+        # Cap below 100% until the job actually finishes (simulation may trail collect).
+        progress_pct = min(95.0, (elapsed / duration_seconds) * 100.0)
+    else:
+        progress_pct = 10.0
+    if task['status'] == 'simulating':
+        remaining = 0
+        progress_pct = 97.0
+    if task['status'] in ('done', 'error'):
+        remaining = 0
+        progress_pct = 100.0
+
     return jsonify({
         'status': task['status'],
         'logs': task['logs'],
         'done': task['status'] in ('done', 'error'),
+        'mode_label': task.get('mode_label') or '',
+        'started_at': started_at,
+        'duration_seconds': duration_seconds,
+        'elapsed_seconds': int(elapsed),
+        'remaining_seconds': remaining,
+        'progress_pct': round(progress_pct, 1),
     })
 
 
