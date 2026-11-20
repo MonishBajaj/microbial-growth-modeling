@@ -536,6 +536,8 @@ def thermoworks_appcheck_page():
         bridge_id=bridge_id,
         submit_url=f'{base}/api/thermoworks/appcheck',
         status_url=f'{base}/api/thermoworks/appcheck/status',
+        return_url=f'{base}/thermoworks/appcheck?done=1&bridge_id={bridge_id}',
+        done=request.args.get('done') == '1',
     )
 
 

@@ -138,9 +138,9 @@
                             <option value="4">Channel 4</option>
                         </select>
                         <p class="hint" id="signals-status">
-                            Refresh uses App Check. Install the one-time Chrome helper
-                            (<code>chrome_extension/thermoworks_appcheck</code>) for automatic verification;
-                            otherwise paste the popup’s Console script on ThermoWorks.
+                            Refresh verifies ThermoWorks via a one-time Chrome helper
+                            (<code>chrome_extension/thermoworks_appcheck</code>). The helper POSTs the
+                            App Check token to this server — no Console paste.
                         </p>
                     </div>
 
@@ -632,10 +632,14 @@
                 }
                 if (data.fallback) {
                     sawFallback = true;
-                    setSignalsStatus(
-                        'App Check needs the ThermoWorks Console script: in the popup click “Copy script + open ThermoWorks”, then F12 → Console → paste → Enter.',
-                        'warn'
-                    );
+                    if (data.error === 'install-helper') {
+                        setSignalsStatus(
+                            'Install the Chrome helper (chrome_extension/thermoworks_appcheck → Load unpacked), then click Refresh again in the same Chrome.',
+                            'warn'
+                        );
+                    } else {
+                        setSignalsStatus('App Check helper is working in the popup…', '');
+                    }
                 }
             }
             window.addEventListener('message', onMessage);
@@ -645,7 +649,6 @@
                         if (!popupClosedAt) {
                             popupClosedAt = Date.now();
                         } else if (Date.now() - popupClosedAt > 8000) {
-                            // Give the console script a few seconds after closing the helper popup.
                             const response = await fetch(
                                 appCheckStatusUrl + '?bridge_id=' + encodeURIComponent(bridgeId),
                                 {
@@ -659,9 +662,7 @@
                                 return;
                             }
                             done(new Error(
-                                sawFallback
-                                    ? 'App Check window closed before the Console script sent the token. Click Refresh and paste the script in ThermoWorks (F12 → Console).'
-                                    : 'App Check window closed before verification finished. Click Refresh and keep the popup open until it says Success.'
+                                'App Check window closed before the token reached the server. Install/enable the Chrome helper, then click Refresh again.'
                             ));
                             return;
                         }
@@ -675,13 +676,14 @@
                     );
                     const data = await response.json();
                     if (data.ready) {
+                        try { if (popup && !popup.closed) popup.close(); } catch (e) {}
                         done(null);
                     }
                 } catch (e) {}
             }, 1500);
             const timeoutId = setTimeout(function () {
                 done(new Error(
-                    'Timed out waiting for ThermoWorks App Check. If ThermoWorks opened, you still must paste the capture script in its Console (F12).'
+                    'Timed out waiting for App Check. Use the same Chrome where the helper is installed, then Refresh again.'
                 ));
             }, 180000);
         });

@@ -10,6 +10,7 @@
     }
     const bridgeId = event.data.bridgeId;
     const submitUrl = event.data.submitUrl;
+    const returnUrl = event.data.returnUrl;
     if (!bridgeId || !submitUrl) {
       return;
     }
@@ -17,7 +18,8 @@
       {
         type: 'tw-appcheck-start',
         bridgeId,
-        submitUrl
+        submitUrl,
+        returnUrl
       },
       (response) => {
         window.postMessage(

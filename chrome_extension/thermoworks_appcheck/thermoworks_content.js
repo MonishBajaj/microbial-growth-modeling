@@ -48,6 +48,7 @@
       return;
     }
 
+    // Normal HTTPS POST to Render — this is the server handoff (not the Console).
     const save = await fetch(job.submitUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
@@ -64,10 +65,11 @@
     }
 
     await chrome.storage.session.remove('twAppCheckJob');
-    console.info('[TW App Check Helper] App Check token sent to dashboard.');
-    try {
-      document.title = 'App Check sent — return to dashboard';
-    } catch (e) {}
+
+    // Return to the same popup on our dashboard so the user never needs Console.
+    if (job.returnUrl) {
+      window.location.href = job.returnUrl;
+    }
   } catch (err) {
     console.error('[TW App Check Helper]', err);
   }

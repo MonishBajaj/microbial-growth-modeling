@@ -1,20 +1,25 @@
 # ThermoWorks App Check Helper (Chrome)
 
-Install once. After that, dashboard **Refresh** opens ThermoWorks and completes App Check automatically — no Console paste.
+After a one-time install, dashboard **Refresh** reuses the **same popup**, switches it to ThermoWorks, mints App Check, and **POSTs the token to your Render server over HTTPS**. No Console paste. No second browser window.
 
-## Install (Chrome / Edge)
+## Install (once)
 
-1. Open `chrome://extensions` (or `edge://extensions`)
-2. Enable **Developer mode**
-3. **Load unpacked** → choose this folder:
+1. Use **Google Chrome** (the helper only runs there).
+2. Open `chrome://extensions`
+3. Enable **Developer mode**
+4. **Load unpacked** → select this folder:
    `chrome_extension/thermoworks_appcheck`
-4. Keep the extension enabled while using the Render dashboard
+5. Leave it enabled
 
 ## Use
 
-1. On the dashboard choose ThermoWorks Signals → **Refresh**
-2. Allow the small helper popup if asked
-3. ThermoWorks opens; the extension mints App Check and sends it back
-4. The dashboard continues on its own
+1. Open the Render dashboard **in that same Chrome**
+2. ThermoWorks Signals → **Refresh**
+3. Allow the popup
+4. The popup itself goes to ThermoWorks, then returns — the dashboard continues
 
-Tokens are cached about an hour, so you usually only see this once per session.
+## Notes
+
+- The token is sent with a normal `POST /api/thermoworks/appcheck` to Render.
+- Tokens are cached about an hour.
+- If ThermoWorks opens in another browser, you opened the dashboard there without the helper — switch to the Chrome that has the extension.

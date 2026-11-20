@@ -12,22 +12,17 @@ Render **cannot** mint it silently. Use either:
 Browser (+ optional Chrome helper) → Render dashboard → ThermoWorks Cloud
 ```
 
-## Fully automatic (recommended): Chrome helper
+## Fully automatic (required for no-Console): Chrome helper
 
-1. On your PC open Chrome → `chrome://extensions` → Developer mode → **Load unpacked**
+ThermoWorks’ captcha only runs on their site. The helper reuses **the same popup**,
+mints there, then **POSTs the token to Render** (`/api/thermoworks/appcheck`).
+
+1. In **Chrome** → `chrome://extensions` → Developer mode → **Load unpacked**
 2. Select `chrome_extension/thermoworks_appcheck` from this repo
-3. Open your Render URL → ThermoWorks Signals → **Refresh**
-4. Allow the popup; ThermoWorks opens and the helper sends App Check back by itself
+3. Open your Render URL **in that same Chrome** → Signals → **Refresh**
+4. The popup switches to ThermoWorks, then returns; the dashboard continues
 
 See `chrome_extension/thermoworks_appcheck/README.md`.
-
-## Manual fallback (no extension)
-
-1. Open your Render URL and sign in.
-2. ThermoWorks Signals → email/password → **Refresh**
-3. In the popup, script is copied and ThermoWorks opens.
-4. On that ThermoWorks tab: **F12 → Console → paste → Enter**
-5. When success appears, the dashboard continues.
 
 Tokens are cached ~1 hour, so you usually only do this once per session.
 
