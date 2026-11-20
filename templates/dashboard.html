@@ -884,21 +884,23 @@
         channels.forEach(function (ch) {
             const opt = document.createElement('option');
             opt.value = String(ch.number);
-            const hasReading = ch.value_c != null && !isNaN(Number(ch.value_c));
+            const isLive = ch.live === true && ch.value_c != null && !isNaN(Number(ch.value_c));
             let label = 'CH ' + ch.number;
             if (ch.label && ch.label !== label) {
                 label += ' — ' + ch.label;
             }
-            if (hasReading) {
-                label += ' — ' + Number(ch.value_c).toFixed(1) + '°C';
+            if (isLive) {
+                label += ' — ' + Number(ch.value_c).toFixed(1) + '°C (live)';
                 if (bestLive == null) {
                     bestLive = String(ch.number);
                 }
+            } else if (ch.reject_reason) {
+                label += ' — not live (' + ch.reject_reason + ')';
             } else {
-                label += ' — no probe';
+                label += ' — no live probe';
             }
             opt.textContent = label;
-            opt.dataset.live = hasReading ? '1' : '0';
+            opt.dataset.live = isLive ? '1' : '0';
             channelSelect.appendChild(opt);
         });
 

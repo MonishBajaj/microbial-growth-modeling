@@ -118,6 +118,51 @@ def _log(log: LogFn, message: str) -> None:
         print(message)
 
 
+def _probe_max_age_sec() -> float:
+    """Reject channel readings older than this (stale / unplugged leftovers)."""
+    try:
+        return max(float(os.environ.get('THERMOWORKS_PROBE_MAX_AGE_SEC') or '90'), 15.0)
+    except ValueError:
+        return 90.0
+
+
+_BAD_STATUS_TOKENS = (
+    'no probe',
+    'noprobe',
+    'no_probe',
+    'disconnected',
+    'unplugged',
+    'offline',
+    'not connected',
+    'unavailable',
+    'error',
+    'fail',
+)
+
+
+def _status_looks_connected(status: Optional[str]) -> bool:
+    text = (status or '').strip().lower().replace('_', ' ').replace('-', ' ')
+    if not text:
+        # Missing status: still allow if telemetry is fresh (checked separately).
+        return True
+    return not any(token in text for token in _BAD_STATUS_TOKENS)
+
+
+def _channel_last_seen_age_sec(channel) -> Optional[float]:
+    """Seconds since ThermoWorks last saw this channel, or None if unknown."""
+    for attr in ('last_seen', 'last_telemetry_saved'):
+        stamp = getattr(channel, attr, None)
+        if stamp is None:
+            continue
+        try:
+            # datetime from API is usually timezone-aware UTC.
+            ts = stamp.timestamp() if hasattr(stamp, 'timestamp') else float(stamp)
+        except (TypeError, ValueError, OSError, OverflowError):
+            continue
+        return max(0.0, time.time() - ts)
+    return None
+
+
 def _to_celsius(value: Optional[float], units: Optional[str]) -> Optional[float]:
     """Convert a channel reading to °C. Humidity ('H') is rejected."""
     if value is None:
@@ -130,8 +175,28 @@ def _to_celsius(value: Optional[float], units: Optional[str]) -> Optional[float]
     return float(value)
 
 
+def _channel_probe_reading(channel) -> tuple[Optional[float], str]:
+    """Return (°C, reason). reason is '' when the reading is accepted as a live probe."""
+    if channel is None:
+        return None, 'missing channel'
+    if not _status_looks_connected(getattr(channel, 'status', None)):
+        return None, f"status={getattr(channel, 'status', None)!r} (not a live probe)"
+    age = _channel_last_seen_age_sec(channel)
+    max_age = _probe_max_age_sec()
+    if age is not None and age > max_age:
+        return None, f'stale telemetry ({age:.0f}s old; max {max_age:.0f}s)'
+    temp_c = _to_celsius(getattr(channel, 'value', None), getattr(channel, 'units', None))
+    if temp_c is None:
+        return None, 'no temperature value'
+    # Sanity band for food-lab probes (°C). Reject absurd leftovers.
+    if temp_c < -40.0 or temp_c > 300.0:
+        return None, f'out-of-range reading ({temp_c:.1f}°C)'
+    return temp_c, ''
+
+
 def _channel_temp_c(channel) -> Optional[float]:
-    return _to_celsius(getattr(channel, 'value', None), getattr(channel, 'units', None))
+    temp_c, _reason = _channel_probe_reading(channel)
+    return temp_c
 
 
 def _auth_message(exc: AuthenticationError) -> str:
@@ -183,13 +248,18 @@ async def _list_devices_async(client: ThermoworksCloud):
                 break
             except Exception:
                 continue
+            temp_c, reason = _channel_probe_reading(ch)
+            age = _channel_last_seen_age_sec(ch)
             channels.append({
                 'number': ch.number or str(n),
                 'label': ch.label or f'Channel {n}',
                 'value': ch.value,
                 'units': ch.units,
-                'value_c': _channel_temp_c(ch),
+                'value_c': temp_c,
                 'status': ch.status,
+                'live': temp_c is not None,
+                'reject_reason': reason or None,
+                'age_sec': None if age is None else int(age),
             })
         result.append({
             'serial': device.serial,
@@ -227,19 +297,19 @@ def list_devices(email: str, password: str, log: LogFn = None) -> list:
 
 
 async def _read_pair(client: ThermoworksCloud, serial: str, channel: int, companion: int):
-    """Return (growth_c, companion_c). Growth is the selected Signals channel."""
+    """Return (growth_c, companion_c, growth_reason). Only live probe values count."""
     primary = await client.get_device_channel(serial, str(channel))
-    growth_c = _channel_temp_c(primary)
-    companion_c = growth_c
+    growth_c, growth_reason = _channel_probe_reading(primary)
+    companion_c = None
     if companion != channel:
         try:
             secondary = await client.get_device_channel(serial, str(companion))
-            secondary_c = _channel_temp_c(secondary)
+            secondary_c, _ = _channel_probe_reading(secondary)
             if secondary_c is not None:
                 companion_c = secondary_c
         except ResourceNotFoundError:
             pass
-    return growth_c, companion_c
+    return growth_c, companion_c, growth_reason
 
 
 async def _collect_async(
@@ -269,26 +339,40 @@ async def _collect_async(
 
     while time.time() < end:
         try:
-            growth_c, companion_c = await _read_pair(client, serial, channel, companion)
+            growth_c, companion_c, growth_reason = await _read_pair(
+                client, serial, channel, companion,
+            )
         except Exception as exc:
             _log(log, f'⚠️ Read failed: {exc}')
             await asyncio.sleep(interval_seconds)
             continue
 
         if growth_c is None:
-            _log(log, '⚠️ No temperature on selected channel (disconnected probe?).')
+            _log(
+                log,
+                '⚠️ Skipping Ch'
+                + str(channel)
+                + ' — not a live probe reading'
+                + (f' ({growth_reason})' if growth_reason else '')
+                + '.',
+            )
             await asyncio.sleep(interval_seconds)
             continue
 
         elapsed_h = (time.time() - start) / 3600.0
         time_data.append(elapsed_h)
         ambient_data.append(growth_c)
+        # Companion is optional display-only; never invent it from a dead channel.
         internal_data.append(companion_c if companion_c is not None else growth_c)
         reading += 1
         _log(
             log,
-            f'🌡️ Reading #{reading}: Ch{channel} {growth_c:.1f}°C'
-            + (f', companion {companion_c:.1f}°C' if companion_c is not None else ''),
+            f'🌡️ Reading #{reading}: Ch{channel} {growth_c:.1f}°C (live probe)'
+            + (
+                f', companion {companion_c:.1f}°C'
+                if companion_c is not None
+                else ', companion unavailable'
+            ),
         )
         await asyncio.sleep(interval_seconds)
 
@@ -385,6 +469,9 @@ def device_snapshot_for_api(devices: list) -> list:
                     'value_c': c.get('value_c'),
                     'units': c.get('units'),
                     'status': c.get('status'),
+                    'live': bool(c.get('live')),
+                    'reject_reason': c.get('reject_reason'),
+                    'age_sec': c.get('age_sec'),
                 }
                 for c in d.get('channels', [])
             ],
