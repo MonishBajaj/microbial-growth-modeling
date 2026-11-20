@@ -15,6 +15,7 @@
         <div class="navbar-actions">
             {% if session.get('authenticated') %}
                 <span>{{ session.get('email', '') }}</span>
+                <a href="{{ url_for('dashboard') }}#jobs-panel" class="btn-nav">Your runs</a>
                 <a href="{{ url_for('logout') }}" class="btn-nav">Log out</a>
             {% endif %}
         </div>

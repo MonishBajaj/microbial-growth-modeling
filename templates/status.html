@@ -4,9 +4,14 @@
 {% block content %}
 <div class="page-container">
     <div class="status-card">
+        <div class="status-actions-top">
+            <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">← Back to dashboard</a>
+            <span class="status-keep-running">This run keeps going in the background</span>
+        </div>
         <h2 id="status-title">Running analysis…</h2>
         <p id="status-text" style="margin-top:0.5rem; color:var(--ink-muted);">
-            Please wait while your job is processed.
+            {% if mode_label %}{{ mode_label }}{% if label %} — {{ label }}{% endif %}.{% endif %}
+            You can return to the dashboard and open this run again from Your runs.
         </p>
 
         <div class="run-timer" id="run-timer" aria-live="polite">
@@ -117,7 +122,8 @@
                     }
                     progressBar.style.width = '100%';
                     progressPct.textContent = '100%';
-                    setTimeout(() => { window.location.reload(); }, 600);
+                    statusText.textContent = 'Finished. Opening results…';
+                    setTimeout(() => { window.location.reload(); }, 800);
                 } else {
                     setTimeout(poll, 2000);
                 }

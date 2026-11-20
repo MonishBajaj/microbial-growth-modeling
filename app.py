@@ -23,6 +23,7 @@ from flask import (
 )
 from enhanced_meater_api import EnhancedMeaterAPI
 from local_accounts import create_profile, reset_password, verify_login
+from job_store import create_job, get_job, job_summary, list_jobs
 from corrected_microbial_growth_model import CorrectedMicrobialGrowthModel
 from arduino_serial import collect_temperature_data, list_ports
 from arduino_wifi import (
@@ -62,8 +63,18 @@ from pmp_catalog import DEFAULT_MODEL_ID, list_models_for_api, require_ready
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
-# In-memory store for background tasks  {task_id: {status, result, logs, ...}}
+# Legacy name kept for existing runners; jobs are JobRecord instances (disk-backed).
 background_tasks = {}
+
+
+def _bind_job(task_id: str):
+    """Return the job record, loading from disk into background_tasks if needed."""
+    # Prefer the process-local object while a runner is active on this worker.
+    local = background_tasks.get(task_id)
+    job = get_job(task_id, prefer_cache=local is not None)
+    if job is not None:
+        background_tasks[task_id] = job
+    return job
 
 _SOURCE_LABELS = {
     'MEATER_REALTIME': 'MEATER',
@@ -208,7 +219,9 @@ def _resolve_model(model_id):
 
 def _run_mode1(task_id, email, password):
     """Mode 1 — Quick Connection Test (background)."""
-    info = background_tasks[task_id]
+    info = _bind_job(task_id)
+    if info is None:
+        return
     info['logs'].append('🔐 Authenticating with MEATER Cloud API...')
     info['status'] = 'authenticating'
 
@@ -280,7 +293,9 @@ def _run_mode2_3(
     model_id=DEFAULT_MODEL_ID,
 ):
     """Modes 2 & 3 — Real-time analysis (background)."""
-    info = background_tasks[task_id]
+    info = _bind_job(task_id)
+    if info is None:
+        return
     info['logs'].append('🔐 Authenticating...')
     info['status'] = 'authenticating'
 
@@ -354,7 +369,9 @@ def _finish_analysis(info, temp_data, data_source, mode_name, model_id=DEFAULT_M
 
 def _run_live_test(task_id, label, collect):
     """Mode 1 — quick connection test for USB or Wi-Fi."""
-    info = background_tasks[task_id]
+    info = _bind_job(task_id)
+    if info is None:
+        return
     info['logs'].append(f'🔍 Testing {label}...')
     info['status'] = 'testing'
 
@@ -391,7 +408,9 @@ def _run_live_analysis(
     model_id=DEFAULT_MODEL_ID,
 ):
     """Modes 2 and 3 — collect USB or Wi-Fi temperatures and run the growth model."""
-    info = background_tasks[task_id]
+    info = _bind_job(task_id)
+    if info is None:
+        return
     info['logs'].append(f'📡 Collecting data from {label}...')
     info['status'] = 'collecting'
 
@@ -512,7 +531,9 @@ def logout():
 @app.route('/dashboard')
 @login_required
 def dashboard():
-    return render_template('dashboard.html')
+    owner = (session.get('email') or '').lower()
+    jobs = [job_summary(job) for job in list_jobs(owner)]
+    return render_template('dashboard.html', jobs=jobs)
 
 
 @app.route('/api/arduino/ports')
@@ -773,14 +794,14 @@ def analyze():
         duration_seconds = int(duration_hours * 3600)
 
         task_id = str(uuid.uuid4())
-        background_tasks[task_id] = {
-            'status': 'starting',
-            'result': None,
-            'logs': [],
-            'started_at': time.time(),
-            'duration_seconds': duration_seconds,
-            'mode_label': mode_label,
-        }
+        owner = (session.get('email') or email or '').lower()
+        source_label = {
+            'arduino_usb': 'Arduino USB',
+            'arduino_wifi': 'Arduino Wi‑Fi',
+            'arduino_push': 'Arduino Push',
+            'signals': 'ThermoWorks Signals',
+            'meater': 'MEATER',
+        }.get(source, source or 'MEATER')
 
         if source == 'arduino_usb':
             label = f'Arduino USB on {port}'
@@ -867,17 +888,34 @@ def analyze():
                     collect_signals, model_id,
                 )
         elif mode == '1':
+            label = 'MEATER Cloud'
             target, args = _run_mode1, (task_id, email, password)
         elif mode == '2':
+            label = 'MEATER Cloud'
             target, args = _run_mode2_3, (
                 task_id, email, password, 0.1, 2, 'Short Real-time Analysis', model_id,
             )
         else:
+            label = 'MEATER Cloud'
             target, args = _run_mode2_3, (
                 task_id, email, password, 8.0, 60, 'Full Real-time Analysis', model_id,
             )
 
+        job = create_job(
+            task_id,
+            owner=owner,
+            mode_label=mode_label,
+            duration_seconds=duration_seconds,
+            label=label,
+            source=source_label,
+        )
+        background_tasks[task_id] = job
+
         threading.Thread(target=target, args=args, daemon=True).start()
+        flash(
+            'Run started in the background. You can return to the dashboard and open it anytime from Your runs.',
+            'info',
+        )
         return redirect(url_for('task_status_page', task_id=task_id))
 
     else:
@@ -885,33 +923,51 @@ def analyze():
         return redirect(url_for('dashboard'))
 
 
+def _job_owned_by_session(task) -> bool:
+    owner = (task.get('owner') or '').lower()
+    email = (session.get('email') or '').lower()
+    return bool(owner) and owner == email
+
+
 @app.route('/status/<task_id>')
 @login_required
 def task_status_page(task_id):
     """Render the status-polling page for a background task."""
-    task = background_tasks.get(task_id)
-    if not task:
-        flash('Task not found.', 'error')
+    task = _bind_job(task_id)
+    if not task or not _job_owned_by_session(task):
+        flash('Run not found.', 'error')
         return redirect(url_for('dashboard'))
 
     if task['status'] in ('done', 'error'):
-        result = task.get('result', {})
+        result = task.get('result') or {}
+        if isinstance(result, dict) and result.get('logs') is None:
+            result = dict(result)
+            result['logs'] = list(task.get('logs') or [])
         if 'error' in result:
-            return render_template('results.html', error=result['error'],
-                                   mode_name='Analysis')
-        return render_template('results.html', **result)
+            return render_template(
+                'results.html',
+                error=result['error'],
+                mode_name=result.get('mode_name') or task.get('mode_label') or 'Analysis',
+                task_id=task_id,
+            )
+        return render_template('results.html', task_id=task_id, **result)
 
-    # Still running → render a status page that polls via JS
-    return render_template('status.html', task_id=task_id,
-                           status=task['status'], logs=task['logs'])
+    return render_template(
+        'status.html',
+        task_id=task_id,
+        status=task['status'],
+        logs=task['logs'],
+        mode_label=task.get('mode_label') or '',
+        label=task.get('label') or '',
+    )
 
 
 @app.route('/api/status/<task_id>')
 @login_required
 def api_task_status(task_id):
     """JSON endpoint polled by the status page."""
-    task = background_tasks.get(task_id)
-    if not task:
+    task = _bind_job(task_id)
+    if not task or not _job_owned_by_session(task):
         return jsonify({'error': 'not_found'}), 404
 
     started_at = float(task.get('started_at') or time.time())
@@ -919,7 +975,6 @@ def api_task_status(task_id):
     elapsed = max(0.0, time.time() - started_at)
     remaining = max(0, int(duration_seconds - elapsed)) if duration_seconds else None
     if duration_seconds > 0:
-        # Cap below 100% until the job actually finishes (simulation may trail collect).
         progress_pct = min(95.0, (elapsed / duration_seconds) * 100.0)
     else:
         progress_pct = 10.0
@@ -932,15 +987,24 @@ def api_task_status(task_id):
 
     return jsonify({
         'status': task['status'],
-        'logs': task['logs'],
+        'logs': list(task.get('logs') or []),
         'done': task['status'] in ('done', 'error'),
         'mode_label': task.get('mode_label') or '',
+        'label': task.get('label') or '',
         'started_at': started_at,
         'duration_seconds': duration_seconds,
         'elapsed_seconds': int(elapsed),
         'remaining_seconds': remaining,
         'progress_pct': round(progress_pct, 1),
     })
+
+
+@app.route('/api/jobs')
+@login_required
+def api_jobs():
+    """JSON list of this user's runs for the dashboard panel."""
+    owner = (session.get('email') or '').lower()
+    return jsonify({'jobs': [job_summary(job) for job in list_jobs(owner)]})
 
 
 # ---------------------------------------------------------------------------

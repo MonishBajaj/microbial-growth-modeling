@@ -626,6 +626,116 @@ a:hover { color: var(--primary-hover); text-decoration: underline; }
     color: rgba(255, 255, 255, 0.55);
 }
 
+/* ---- Jobs panel ---- */
+.jobs-panel {
+    margin: 0 0 1.5rem;
+    padding: 1.1rem 1.2rem;
+    background: rgba(255, 255, 255, 0.88);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
+}
+
+.jobs-panel-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 0.85rem;
+}
+
+.jobs-panel-head h2 {
+    font-size: 1.15rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+}
+
+.jobs-panel-head p {
+    margin-top: 0.25rem;
+    color: var(--ink-muted);
+    font-size: 0.9rem;
+}
+
+.jobs-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+}
+
+.jobs-empty {
+    color: var(--ink-muted);
+    font-size: 0.92rem;
+    padding: 0.4rem 0;
+}
+
+.job-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    align-items: center;
+    text-decoration: none;
+    color: inherit;
+    padding: 0.75rem 0.9rem;
+    border: 1px solid var(--hairline);
+    border-radius: 10px;
+    background: #fff;
+}
+
+.job-row:hover {
+    border-color: #99f6e4;
+    background: rgba(15, 118, 110, 0.04);
+}
+
+.job-main {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    min-width: 0;
+}
+
+.job-main span {
+    color: var(--ink-muted);
+    font-size: 0.88rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.job-meta {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.2rem;
+    font-size: 0.82rem;
+    color: var(--ink-muted);
+    flex-shrink: 0;
+}
+
+.job-status {
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 0.72rem;
+}
+
+.job-row.is-running .job-status { color: #0f766e; }
+.job-row.is-done .job-status { color: #15803d; }
+.job-row.is-error .job-status { color: #b91c1c; }
+
+.status-actions-top {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+}
+
+.status-keep-running {
+    font-size: 0.85rem;
+    color: var(--ink-muted);
+}
+
 /* ---- Login ---- */
 .login-wrapper {
     min-height: calc(100vh - 56px);

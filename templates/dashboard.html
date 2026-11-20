@@ -12,6 +12,37 @@
         </p>
     </div>
 
+    <section class="jobs-panel" id="jobs-panel">
+        <div class="jobs-panel-head">
+            <div>
+                <h2>Your runs</h2>
+                <p>Jobs keep running after you leave the status page. Open one anytime, or start another below.</p>
+            </div>
+            <button type="button" class="btn btn-secondary" id="refresh-jobs" onclick="loadJobs()">Refresh</button>
+        </div>
+        <div id="jobs-list" class="jobs-list">
+            {% if jobs %}
+                {% for job in jobs %}
+                <a class="job-row {% if job.running %}is-running{% elif job.ok %}is-done{% else %}is-error{% endif %}"
+                   href="{{ url_for('task_status_page', task_id=job.task_id) }}">
+                    <div class="job-main">
+                        <strong>{{ job.mode_label or 'Analysis' }}</strong>
+                        <span>{{ job.label or job.source or 'Temperature source' }}</span>
+                    </div>
+                    <div class="job-meta">
+                        <span class="job-status">{{ job.status }}</span>
+                        {% if job.running and job.remaining_seconds is not none %}
+                        <span>~{{ (job.remaining_seconds // 60) }}m {{ (job.remaining_seconds % 60) }}s left</span>
+                        {% endif %}
+                    </div>
+                </a>
+                {% endfor %}
+            {% else %}
+                <p class="jobs-empty" id="jobs-empty">No runs yet. Start one below — you can leave and come back.</p>
+            {% endif %}
+        </div>
+    </section>
+
     <form method="POST" action="{{ url_for('analyze') }}" id="analysis-form">
         <div class="step-list">
 
@@ -234,6 +265,52 @@
     const modelStorageKey = 'selectedModelId';
     const wifiLookupUrl = "{{ url_for('arduino_wifi_lookup') }}";
     const modelsUrl = "{{ url_for('api_models') }}";
+    const jobsUrl = "{{ url_for('api_jobs') }}";
+    const statusBase = "{{ url_for('task_status_page', task_id='__ID__') }}";
+
+    function formatRemain(seconds) {
+        const s = Math.max(0, Math.floor(seconds || 0));
+        const m = Math.floor(s / 60);
+        const r = s % 60;
+        if (m >= 60) {
+            const h = Math.floor(m / 60);
+            return '~' + h + 'h ' + (m % 60) + 'm left';
+        }
+        return '~' + m + 'm ' + r + 's left';
+    }
+
+    async function loadJobs() {
+        const list = document.getElementById('jobs-list');
+        if (!list) {
+            return;
+        }
+        try {
+            const response = await fetch(jobsUrl, {
+                credentials: 'same-origin',
+                headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+            });
+            const data = await response.json();
+            const jobs = data.jobs || [];
+            if (!jobs.length) {
+                list.innerHTML = '<p class="jobs-empty">No runs yet. Start one below — you can leave and come back.</p>';
+                return;
+            }
+            list.innerHTML = jobs.map(function (job) {
+                const href = statusBase.replace('__ID__', encodeURIComponent(job.task_id));
+                const cls = job.running ? 'is-running' : (job.ok ? 'is-done' : 'is-error');
+                const remain = job.running ? '<span>' + formatRemain(job.remaining_seconds) + '</span>' : '';
+                return (
+                    '<a class="job-row ' + cls + '" href="' + href + '">' +
+                    '<div class="job-main"><strong>' + (job.mode_label || 'Analysis') + '</strong>' +
+                    '<span>' + (job.label || job.source || 'Temperature source') + '</span></div>' +
+                    '<div class="job-meta"><span class="job-status">' + (job.status || '') + '</span>' +
+                    remain + '</div></a>'
+                );
+            }).join('');
+        } catch (e) {
+            // Keep server-rendered list if refresh fails.
+        }
+    }
 
     const sourceLabels = {
         meater: 'MEATER Cloud',
@@ -1139,5 +1216,8 @@
         localStorage.setItem(signalsChannelKey, this.value);
         updateRunSummary();
     });
+
+    loadJobs();
+    setInterval(loadJobs, 15000);
 </script>
 {% endblock %}
