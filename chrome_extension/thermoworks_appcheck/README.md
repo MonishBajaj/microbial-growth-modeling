@@ -1,25 +1,23 @@
-# ThermoWorks App Check Helper (Chrome)
+# ThermoWorks App Check Helper (Chrome) v1.1
 
-After a one-time install, dashboard **Refresh** reuses the **same popup**, switches it to ThermoWorks, mints App Check, and **POSTs the token to your Render server over HTTPS**. No Console paste. No second browser window.
+Opening ThermoWorks alone does **not** fill the Render dashboard. This helper must:
 
-## Install (once)
+1. Mint App Check on `cloud.thermoworks.com`
+2. **POST** the token to your Render app (`/api/thermoworks/appcheck`)
+3. Return the popup so Device can load
 
-1. Use **Google Chrome** (the helper only runs there).
-2. Open `chrome://extensions`
-3. Enable **Developer mode**
-4. **Load unpacked** → select this folder:
-   `chrome_extension/thermoworks_appcheck`
-5. Leave it enabled
+## Install / update
+
+1. Chrome → `chrome://extensions`
+2. Developer mode on
+3. If already installed: click **Reload** on this extension (must show **1.1.0**)
+4. Or **Load unpacked** → this folder
 
 ## Use
 
-1. Open the Render dashboard **in that same Chrome**
+1. Open the **Render** dashboard in **this same Chrome**
 2. ThermoWorks Signals → **Refresh**
-3. Allow the popup
-4. The popup itself goes to ThermoWorks, then returns — the dashboard continues
+3. Allow the popup — it should stay on ThermoWorks **login** briefly
+4. Popup returns to “Success” and Device fills in
 
-## Notes
-
-- The token is sent with a normal `POST /api/thermoworks/appcheck` to Render.
-- Tokens are cached about an hour.
-- If ThermoWorks opens in another browser, you opened the dashboard there without the helper — switch to the Chrome that has the extension.
+If you only see the ThermoWorks “My Account Dashboard” and Device stays **Loading…**, the token never reached Render — Reload the extension to 1.1.0 and try again. Do not stay only on `/home`; the helper needs the login page’s reCAPTCHA.
