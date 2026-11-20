@@ -7,3 +7,4 @@ pyserial==3.5
 zeroconf==0.151.5
 thermoworks-cloud==0.1.17
 aiohttp>=3.9.0
+gunicorn
