@@ -512,12 +512,31 @@ def api_models():
     return jsonify(list_models_for_api())
 
 
+def _public_app_base() -> str:
+    """HTTPS base URL for browser → server callbacks (Render / tunnel / local)."""
+    env = (os.environ.get('PUBLIC_BASE_URL') or os.environ.get('RENDER_EXTERNAL_URL') or '').rstrip('/')
+    if env:
+        return env
+    # Prefer the host the browser used (works behind Cloudflare / Render proxies).
+    proto = (request.headers.get('X-Forwarded-Proto') or request.scheme or 'https').split(',')[0].strip()
+    host = (request.headers.get('X-Forwarded-Host') or request.host or '').split(',')[0].strip()
+    if host:
+        return f'{proto}://{host}'.rstrip('/')
+    return (public_base_url() or request.url_root.rstrip('/'))
+
+
 @app.route('/thermoworks/appcheck')
 @login_required
 def thermoworks_appcheck_page():
     """Popup page that mints Firebase App Check in the visitor's browser."""
     bridge_id = request.args.get('bridge_id') or create_bridge()
-    return render_template('thermoworks_appcheck.html', bridge_id=bridge_id)
+    base = _public_app_base()
+    return render_template(
+        'thermoworks_appcheck.html',
+        bridge_id=bridge_id,
+        submit_url=f'{base}/api/thermoworks/appcheck',
+        status_url=f'{base}/api/thermoworks/appcheck/status',
+    )
 
 
 @app.route('/api/thermoworks/appcheck', methods=['GET', 'POST', 'OPTIONS'])

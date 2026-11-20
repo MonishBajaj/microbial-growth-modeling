@@ -138,8 +138,8 @@
                             <option value="4">Channel 4</option>
                         </select>
                         <p class="hint" id="signals-status">
-                            Refresh opens a browser App Check window so ThermoWorks works on Render without a lab PC.
-                            If automatic mint fails, follow the popup’s fallback (script on cloud.thermoworks.com).
+                            Refresh opens App Check. If automatic mint fails, the popup asks you to paste a capture
+                            script in the ThermoWorks Console (opening ThermoWorks alone is not enough).
                         </p>
                     </div>
 
@@ -615,6 +615,8 @@
                     resolve();
                 }
             }
+            let sawFallback = false;
+            let popupClosedAt = 0;
             function onMessage(event) {
                 if (event.origin !== window.location.origin) {
                     return;
@@ -625,14 +627,43 @@
                 }
                 if (data.ok) {
                     done(null);
+                    return;
                 }
-                // Automatic mint may fail and fall back inside the popup; keep waiting.
+                if (data.fallback) {
+                    sawFallback = true;
+                    setSignalsStatus(
+                        'App Check needs the ThermoWorks Console script: in the popup click “Copy script + open ThermoWorks”, then F12 → Console → paste → Enter.',
+                        'warn'
+                    );
+                }
             }
             window.addEventListener('message', onMessage);
             const pollTimer = setInterval(async function () {
                 try {
                     if (popup && popup.closed) {
-                        // Still allow bridge completion from ThermoWorks console script.
+                        if (!popupClosedAt) {
+                            popupClosedAt = Date.now();
+                        } else if (Date.now() - popupClosedAt > 8000) {
+                            // Give the console script a few seconds after closing the helper popup.
+                            const response = await fetch(
+                                appCheckStatusUrl + '?bridge_id=' + encodeURIComponent(bridgeId),
+                                {
+                                    credentials: 'same-origin',
+                                    headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+                                }
+                            );
+                            const late = await response.json().catch(function () { return {}; });
+                            if (late.ready) {
+                                done(null);
+                                return;
+                            }
+                            done(new Error(
+                                sawFallback
+                                    ? 'App Check window closed before the Console script sent the token. Click Refresh and paste the script in ThermoWorks (F12 → Console).'
+                                    : 'App Check window closed before verification finished. Click Refresh and keep the popup open until it says Success.'
+                            ));
+                            return;
+                        }
                     }
                     const response = await fetch(
                         appCheckStatusUrl + '?bridge_id=' + encodeURIComponent(bridgeId),
@@ -648,7 +679,9 @@
                 } catch (e) {}
             }, 1500);
             const timeoutId = setTimeout(function () {
-                done(new Error('Timed out waiting for ThermoWorks App Check.'));
+                done(new Error(
+                    'Timed out waiting for ThermoWorks App Check. If ThermoWorks opened, you still must paste the capture script in its Console (F12).'
+                ));
             }, 180000);
         });
     }

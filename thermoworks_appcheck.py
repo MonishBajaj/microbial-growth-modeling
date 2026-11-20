@@ -34,6 +34,11 @@ _expires_at = 0.0
 # bridge_id -> {created, token?, expires_at?}
 _bridges: dict = {}
 _BRIDGE_TTL_SEC = 900.0
+# Shared across gunicorn workers (in-memory alone loses the handoff on Render).
+_STATE_PATH = os.environ.get(
+    "THERMOWORKS_APPCHECK_STATE",
+    "/tmp/microbial-thermoworks-appcheck-state.json",
+)
 
 _EXCHANGE_JS = r"""
 (async () => {
@@ -75,8 +80,79 @@ _EXCHANGE_JS = r"""
 """ % (_PROJECT, _APP_ID, _API_KEY)
 
 
+def _load_state() -> dict:
+    try:
+        with open(_STATE_PATH, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if isinstance(data, dict):
+            return data
+    except (OSError, json.JSONDecodeError, TypeError):
+        pass
+    return {"token": None, "expires_at": 0.0, "bridges": {}}
+
+
+def _save_state(token: Optional[str], expires_at: float, bridges: dict) -> None:
+    payload = {
+        "token": token,
+        "expires_at": expires_at,
+        "bridges": bridges,
+    }
+    directory = os.path.dirname(_STATE_PATH) or "."
+    os.makedirs(directory, exist_ok=True)
+    tmp_path = f"{_STATE_PATH}.{os.getpid()}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+    os.replace(tmp_path, _STATE_PATH)
+
+
+def _sync_from_disk() -> None:
+    """Refresh in-process cache from the shared state file."""
+    global _token, _expires_at, _bridges
+    data = _load_state()
+    disk_token = data.get("token")
+    disk_expires = float(data.get("expires_at") or 0)
+    disk_bridges = data.get("bridges") if isinstance(data.get("bridges"), dict) else {}
+    now = time.time()
+    # Prefer whichever token lasts longer.
+    if disk_token and disk_expires > _expires_at:
+        _token = disk_token
+        _expires_at = disk_expires
+    # Merge bridges; keep the newer / completed entry.
+    for bridge_id, entry in disk_bridges.items():
+        if not isinstance(entry, dict):
+            continue
+        if now - float(entry.get("created") or 0) > _BRIDGE_TTL_SEC:
+            continue
+        local = _bridges.get(bridge_id)
+        if local is None or (entry.get("token") and not local.get("token")):
+            _bridges[bridge_id] = {
+                "created": float(entry.get("created") or now),
+                "token": entry.get("token"),
+                "expires_at": float(entry.get("expires_at") or 0),
+            }
+        elif entry.get("expires_at", 0) > local.get("expires_at", 0):
+            _bridges[bridge_id] = {
+                "created": float(entry.get("created") or local.get("created") or now),
+                "token": entry.get("token") or local.get("token"),
+                "expires_at": float(entry.get("expires_at") or 0),
+            }
+
+
+def _persist_locked() -> None:
+    now = time.time()
+    alive = {
+        key: value
+        for key, value in _bridges.items()
+        if now - float(value.get("created") or 0) <= _BRIDGE_TTL_SEC
+    }
+    _bridges.clear()
+    _bridges.update(alive)
+    _save_state(_token, _expires_at, _bridges)
+
+
 def _cached() -> Optional[str]:
     with _cache_lock:
+        _sync_from_disk()
         if _token and time.time() < _expires_at - 120:
             return _token
     return None
@@ -85,8 +161,10 @@ def _cached() -> Optional[str]:
 def _store(token: str, ttl_seconds: float) -> None:
     global _token, _expires_at
     with _cache_lock:
+        _sync_from_disk()
         _token = token
         _expires_at = time.time() + ttl_seconds
+        _persist_locked()
 
 
 def store_browser_token(token: str, ttl: str | float = "3600s") -> float:
@@ -109,42 +187,63 @@ def create_bridge() -> str:
     bridge_id = secrets.token_urlsafe(16)
     now = time.time()
     with _cache_lock:
-        # Drop stale bridges.
-        dead = [key for key, value in _bridges.items() if now - value.get("created", 0) > _BRIDGE_TTL_SEC]
+        _sync_from_disk()
+        dead = [
+            key for key, value in _bridges.items()
+            if now - float(value.get("created") or 0) > _BRIDGE_TTL_SEC
+        ]
         for key in dead:
             _bridges.pop(key, None)
         _bridges[bridge_id] = {"created": now, "token": None, "expires_at": 0.0}
+        _persist_locked()
     return bridge_id
 
 
 def complete_bridge(bridge_id: str, token: str, ttl: str | float = "3600s") -> float:
     """Store token for a bridge id and in the global App Check cache."""
+    global _token, _expires_at
+
     bridge_id = (bridge_id or "").strip()
     if not bridge_id:
         raise ValueError("bridge_id is required.")
-    ttl_seconds = store_browser_token(token, ttl)
+    token = (token or "").strip()
+    if not token or len(token) < 20:
+        raise ValueError("App Check token is missing or too short.")
+    if isinstance(ttl, (int, float)):
+        ttl_seconds = max(float(ttl), 60.0)
+    else:
+        ttl_seconds = _ttl_seconds(str(ttl))
+
+    now = time.time()
     with _cache_lock:
+        _sync_from_disk()
         entry = _bridges.get(bridge_id)
+        # Accept even if this worker never saw create_bridge (other gunicorn worker).
         if entry is None:
-            raise ValueError("Unknown or expired bridge_id. Re-open App Check from the dashboard.")
-        if time.time() - entry.get("created", 0) > _BRIDGE_TTL_SEC:
+            entry = {"created": now, "token": None, "expires_at": 0.0}
+            _bridges[bridge_id] = entry
+        elif now - float(entry.get("created") or 0) > _BRIDGE_TTL_SEC:
             _bridges.pop(bridge_id, None)
             raise ValueError("App Check bridge expired. Re-open App Check from the dashboard.")
+        _token = token
+        _expires_at = now + ttl_seconds
         entry["token"] = token
-        entry["expires_at"] = time.time() + ttl_seconds
+        entry["expires_at"] = _expires_at
+        _persist_locked()
     return ttl_seconds
 
 
 def bridge_status(bridge_id: str) -> dict:
     bridge_id = (bridge_id or "").strip()
     with _cache_lock:
+        _sync_from_disk()
         entry = _bridges.get(bridge_id)
-        cached = _cached()
+        cached = _token if _token and time.time() < _expires_at - 120 else None
         if entry and entry.get("token"):
             return {
                 "ready": True,
                 "bridge_ready": True,
-                "expires_in": max(int(entry.get("expires_at", 0) - time.time()), 0),
+                "expires_in": max(int(float(entry.get("expires_at") or 0) - time.time()), 0),
             }
         if cached:
             return {
@@ -156,10 +255,11 @@ def bridge_status(bridge_id: str) -> dict:
 
 
 def appcheck_status() -> dict:
-    cached = _cached()
     with _cache_lock:
+        _sync_from_disk()
+        cached = bool(_token and time.time() < _expires_at - 120)
         expires_in = max(int(_expires_at - time.time()), 0) if cached else 0
-    return {"ready": bool(cached), "expires_in": expires_in}
+    return {"ready": cached, "expires_in": expires_in}
 
 
 def _ttl_seconds(ttl: str) -> float:
