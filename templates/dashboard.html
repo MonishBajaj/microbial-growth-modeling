@@ -6,8 +6,8 @@
     <div class="dashboard-header">
         <h1>Run an analysis</h1>
         <p>
-            Work top to bottom: choose a Ready pathogen model, pick where temperature comes from,
-            then choose what to run. Unavailable models are listed for later — they do not have
+            Work top to bottom: choose bacteria and food (Ready only), pick where temperature comes from,
+            then choose what to run. Unavailable foods are listed for later — they do not have
             verified coefficients yet.
         </p>
     </div>
@@ -52,7 +52,7 @@
                     <span class="step-num">1</span>
                     <div class="step-head-text">
                         <h2>Pathogen model</h2>
-                        <p>Select the organism and the Ready growth or cooling model to simulate.</p>
+                        <p>Select the organism and the food / matrix to simulate (PMP Online foods listed; only Ready entries run).</p>
                     </div>
                 </div>
                 <div class="step-body">
@@ -67,23 +67,24 @@
                         <input type="hidden" id="model-bacteria" value="">
                     </div>
 
-                    <label class="field-label" id="model-id-label" style="margin-top:0.9rem;">Model</label>
-                    <div class="custom-select" id="model-picker" data-select="model">
-                        <button type="button" class="custom-select-trigger" id="model-id-trigger"
-                                aria-labelledby="model-id-label" aria-haspopup="listbox" aria-expanded="false">
-                            <span class="custom-select-value">Loading models…</span>
+                    <label class="field-label" id="model-food-label" style="margin-top:0.9rem;">Food</label>
+                    <div class="custom-select" id="food-picker" data-select="food">
+                        <button type="button" class="custom-select-trigger" id="model-food-trigger"
+                                aria-labelledby="model-food-label" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="custom-select-value">Loading foods…</span>
                             <span class="custom-select-chevron" aria-hidden="true"></span>
                         </button>
-                        <ul class="custom-select-menu" id="model-id-menu" role="listbox" hidden></ul>
+                        <ul class="custom-select-menu" id="model-food-menu" role="listbox" hidden></ul>
+                        <input type="hidden" id="model-food" value="">
                         <input type="hidden" name="model_id" id="model-id" value="" required>
                     </div>
 
                     <label class="toggle-row">
                         <input type="checkbox" id="show-unavailable">
-                        Show unavailable models (no coefficients yet)
+                        Show unavailable foods (no coefficients yet)
                     </label>
                     <p class="hint" id="model-status">
-                        Only Ready models can run a simulation.
+                        Only Ready bacteria → food combinations can run a simulation.
                     </p>
                 </div>
             </section>
@@ -348,13 +349,12 @@
     function updateRunSummary() {
         const summary = document.getElementById('run-summary');
         const bacteria = document.getElementById('model-bacteria').value || '—';
-        const modelTrigger = document.querySelector('#model-picker .custom-select-value');
-        const modelText = (modelTrigger && modelTrigger.textContent) || '—';
+        const food = document.getElementById('model-food').value || '—';
         const source = sourceLabels[selectedSource] || selectedSource;
         const mode = selectedMode ? modeLabels[selectedMode] : 'not chosen';
         summary.innerHTML =
             '<strong>' + bacteria + '</strong><span class="sep">·</span>' +
-            modelText + '<span class="sep">·</span>' +
+            food + '<span class="sep">·</span>' +
             source + '<span class="sep">·</span>' +
             mode;
     }
@@ -403,7 +403,7 @@
                 hidden.value = name;
                 setCustomSelectLabel('bacteria-picker', name);
                 closeAllCustomSelects();
-                fillModelOptions(name);
+                fillFoodOptions(name);
                 updateRunSummary();
             });
             menu.appendChild(li);
@@ -412,9 +412,15 @@
         setCustomSelectLabel('bacteria-picker', selectedName || 'Choose bacteria');
     }
 
-    function fillModelOptions(bacteria) {
-        const menu = document.getElementById('model-id-menu');
-        const hidden = document.getElementById('model-id');
+    function foodDisplayLabel(model) {
+        const food = model.food || model.label;
+        return (model.ready ? 'Ready — ' : 'Unavailable — ') + food;
+    }
+
+    function fillFoodOptions(bacteria) {
+        const menu = document.getElementById('model-food-menu');
+        const foodHidden = document.getElementById('model-food');
+        const modelHidden = document.getElementById('model-id');
         const saved = localStorage.getItem(modelStorageKey) || (catalog && catalog.default_model_id) || '';
         let models = (catalog.models_by_bacteria[bacteria] || []);
         if (!showUnavailable) {
@@ -426,9 +432,10 @@
         models.forEach(function (model) {
             const li = document.createElement('li');
             li.setAttribute('role', 'option');
-            const label = (model.ready ? 'Ready — ' : 'Unavailable — ') + model.label;
+            const label = foodDisplayLabel(model);
             li.textContent = label;
             li.dataset.value = model.ready ? model.id : '';
+            li.dataset.food = model.food || model.label;
             if (!model.ready) {
                 li.classList.add('disabled');
                 li.setAttribute('aria-disabled', 'true');
@@ -438,11 +445,12 @@
             }
             li.addEventListener('click', function () {
                 if (!model.ready) {
-                    setModelStatus(model.reason || 'Coefficients are not available for this model yet.', 'warn');
+                    setModelStatus(model.reason || 'Coefficients are not available for this food yet.', 'warn');
                     return;
                 }
-                hidden.value = model.id;
-                setCustomSelectLabel('model-picker', label);
+                modelHidden.value = model.id;
+                foodHidden.value = model.food || model.label;
+                setCustomSelectLabel('food-picker', label);
                 menu.querySelectorAll('[role="option"]').forEach(function (el) {
                     el.classList.toggle('selected', el === li);
                 });
@@ -460,18 +468,20 @@
             }
         }
 
-        hidden.value = selectedId || '';
+        modelHidden.value = selectedId || '';
         const selectedModel = models.find(function (m) { return m.id === selectedId; });
         if (selectedModel) {
-            const label = 'Ready — ' + selectedModel.label;
-            setCustomSelectLabel('model-picker', label);
+            const label = foodDisplayLabel(selectedModel);
+            foodHidden.value = selectedModel.food || selectedModel.label;
+            setCustomSelectLabel('food-picker', label);
             menu.querySelectorAll('[role="option"]').forEach(function (el) {
                 el.classList.toggle('selected', el.dataset.value === selectedId);
             });
         } else {
-            setCustomSelectLabel('model-picker', showUnavailable
-                ? 'No ready model — enable a Ready entry or pick another bacteria'
-                : 'No ready model for this bacteria');
+            foodHidden.value = '';
+            setCustomSelectLabel('food-picker', showUnavailable
+                ? 'No ready food — enable a Ready entry or pick another bacteria'
+                : 'No ready food for this bacteria');
         }
         onModelChange();
         updateRunSummary();
@@ -483,11 +493,12 @@
         const models = (catalog && catalog.models_by_bacteria[bacteria]) || [];
         const model = models.find(function (m) { return m.id === modelId; });
         if (!model) {
-            setModelStatus('Choose a Ready model before running analysis (except Quick connection test).', 'warn');
+            setModelStatus('Choose a Ready bacteria → food before running analysis (except Quick connection test).', 'warn');
             return;
         }
         localStorage.setItem(modelStorageKey, model.id);
-        let msg = model.citation || 'Ready model with verified coefficients.';
+        document.getElementById('model-food').value = model.food || model.label;
+        let msg = (model.food ? model.food + '. ' : '') + (model.citation || 'Ready model with verified coefficients.');
         if (model.defaults && model.defaults.note) {
             msg += ' ' + model.defaults.note;
         }
@@ -532,16 +543,16 @@
                 }
             }
             fillBacteriaMenu(initialBacteria);
-            fillModelOptions(initialBacteria);
+            fillFoodOptions(initialBacteria);
         } catch (err) {
             setCustomSelectLabel('bacteria-picker', 'Could not load models');
-            setCustomSelectLabel('model-picker', 'Could not load models');
+            setCustomSelectLabel('food-picker', 'Could not load foods');
             setModelStatus('Could not load the pathogen model catalog.', 'warn');
         }
     }
 
     wireCustomSelect('bacteria-picker');
-    wireCustomSelect('model-picker');
+    wireCustomSelect('food-picker');
     document.addEventListener('click', function (event) {
         if (!event.target.closest('.custom-select')) {
             closeAllCustomSelects();
@@ -551,7 +562,7 @@
         showUnavailable = this.checked;
         const current = document.getElementById('model-bacteria').value;
         fillBacteriaMenu(current);
-        fillModelOptions(current);
+        fillFoodOptions(current);
     });
     loadModelCatalog();
 
@@ -1121,7 +1132,7 @@
             const modelId = document.getElementById('model-id').value;
             if (!modelId) {
                 e.preventDefault();
-                alert('Choose a Ready bacteria → model before running analysis.');
+                alert('Choose a Ready bacteria → food before running analysis.');
                 return;
             }
         }
