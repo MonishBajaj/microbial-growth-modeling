@@ -1,5 +1,9 @@
 # Microbial Growth Modeling with MEATER Plus API Integration
 
+This file is an early description of the MATLAB port and the first MEATER client. The file tree at the bottom names `growth_analyzer.py` and an `examples/` directory that are not in this folder. Current behavior, including Arduino and ThermoWorks, is in [docs/USER_GUIDE.md](docs/USER_GUIDE.md). The file-by-file index is [docs/FILES.md](docs/FILES.md).
+
+
+
 ## Complete Python Implementation
 
 This Python implementation replaces the MATLAB code for dynamic microbial growth modeling by integrating with the MEATER Plus API for real-time temperature input.

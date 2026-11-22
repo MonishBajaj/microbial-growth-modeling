@@ -1,3 +1,10 @@
+"""
+Earlier MEATER Cloud client, kept for the command-line example in example_usage.py.
+
+The web app uses enhanced_meater_api.py instead. This client logs in the same
+way (POST /v1/login, then bearer token on /devices) but waits 30 seconds between
+calls and does not reject stale probe readings.
+"""
 
 import requests
 import time

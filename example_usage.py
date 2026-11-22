@@ -1,4 +1,8 @@
 
+# Command-line demo of the older model (microbial_growth_model.py) and meater_api.py.
+# use_real_meater() has a hardcoded MEATER login in the source. Replace that
+# email and password before you run it, and do not share the file with the
+# login still filled in. The web app does not import this file.
 # Example usage of the microbial growth model with MEATER API
 from microbial_growth_model import MicrobialGrowthModel
 from meater_api import MeaterAPI

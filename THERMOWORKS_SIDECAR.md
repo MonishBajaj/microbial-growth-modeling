@@ -1,4 +1,6 @@
-# ThermoWorks on Render (browser App Check — preferred)
+# ThermoWorks on Render (browser App Check, preferred)
+
+The full walkthrough of how a Signals reading reaches the growth model is in [docs/USER_GUIDE.md](docs/USER_GUIDE.md). This file is the short setup for the two App Check paths.
 
 ThermoWorks requires a Firebase **App Check** token from reCAPTCHA Enterprise.
 Their reCAPTCHA key only works on `cloud.thermoworks.com`, so a normal webpage on

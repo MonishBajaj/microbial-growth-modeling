@@ -1,3 +1,10 @@
+"""
+Earlier Baranyi-Roberts model with one fixed Pseudomonas coefficient set.
+
+The web app uses corrected_microbial_growth_model.py, which loads coefficients
+from pmp_catalog.py and builds a one-minute grid before integrating. This file
+is what example_usage.py still imports. Its secondary_model returns 0 below 15 C.
+"""
 
 import numpy as np
 from scipy.interpolate import CubicSpline

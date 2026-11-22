@@ -1,3 +1,7 @@
+# Command-line demo of EnhancedMeaterAPI plus CorrectedMicrobialGrowthModel.
+# It is not imported by app.py. Run it directly if you want a terminal session
+# that prints live MEATER readings and then plots one simulation.
+# The web dashboard is the supported way to run the same model.
 # Enhanced Microbial Growth Analysis with Real-time MEATER Temperature Display
 import numpy as np
 import matplotlib.pyplot as plt

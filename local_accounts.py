@@ -1,4 +1,12 @@
-"""Persistent dashboard accounts (create profile / password reset)."""
+"""Dashboard sign-in accounts, stored as password hashes in local_users.json.
+
+This is the analyzer login, separate from a MEATER or ThermoWorks cloud login.
+Creating a profile or resetting a password also requires the lab access code
+(LAB_ACCESS_CODE, default uga-microbial-lab). Three seed accounts are merged in
+on first load if they are missing from the file. Passwords are hashed with
+Werkzeug; the plaintext password is not stored here. app.py does keep the
+plaintext in the Flask session so a MEATER run can reuse it.
+"""
 
 from __future__ import annotations
 

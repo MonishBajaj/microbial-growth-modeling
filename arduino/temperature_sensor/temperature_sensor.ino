@@ -1,4 +1,13 @@
 /*
+  UNO R4 WiFi sketch for the USB and same-network paths.
+
+  USB: Serial at 9600 prints one Celsius number per line. arduino_serial.py reads it.
+  Wi-Fi: after join, the board advertises _microbial._tcp and accepts a TCP
+  client on port 8080, then writes the same one-number line. arduino_wifi.py
+  finds the board with mDNS or a typed address.
+
+  WIFI_SSID and WIFI_PASSWORD below are lab values. Change them before sharing.
+
   UNO R4 WiFi temperature sketch for the microbial growth dashboard.
 
   USB and Wi-Fi stay independent:

@@ -1,5 +1,7 @@
 # ThermoWorks App Check Helper v1.2.0
 
+What the token is used for, and the lab-PC sidecar alternative, are in [docs/USER_GUIDE.md](../../docs/USER_GUIDE.md) under "ThermoWorks Signals".
+
 Opening ThermoWorks does **not** fill Render by itself. This helper mints App Check and **POSTs** the token to your dashboard.
 
 ## Critical setup

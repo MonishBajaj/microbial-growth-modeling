@@ -1,9 +1,14 @@
-"""Mint a Firebase App Check token for ThermoWorks Cloud.
+"""Hold and mint the Firebase App Check token ThermoWorks Cloud requires.
 
-ThermoWorks enforces App Check on email/password sign-in. The token is produced
-by the same reCAPTCHA Enterprise widget the Cloud website uses, then exchanged
-inside that page. Headless Chrome is rejected, so this opens a short real
-Chrome window on the local display and caches the token until it nears expiry.
+Two ways a token arrives:
+1. The visitor's browser (dashboard popup or Chrome helper) POSTs it to
+   /api/thermoworks/appcheck. store_browser_token and complete_bridge save it.
+   Bridge ids let the popup and the dashboard session meet even when they do
+   not share cookies. State is also written to disk so gunicorn workers agree.
+2. On a machine with a real display, get_app_check_token opens Chrome, runs
+   reCAPTCHA Enterprise on cloud.thermoworks.com, and exchanges that for an
+   App Check token. Headless Chrome is rejected by ThermoWorks. A successful
+   token is cached until it nears expiry.
 """
 
 from __future__ import annotations

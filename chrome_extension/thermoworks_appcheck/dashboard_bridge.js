@@ -1,3 +1,7 @@
+// Runs on the dashboard origin. Listens for window messages from the page
+// (source tw-dashboard, type tw-appcheck-request) and forwards bridgeId,
+// submitUrl, and returnUrl to background.js.
+
 (() => {
   document.documentElement.dataset.twAppcheckHelper = '1';
 

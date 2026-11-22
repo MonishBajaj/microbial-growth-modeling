@@ -1,3 +1,4 @@
+# Packages for app.py and the collectors. Install with: pip install -r requirements.txt
 numpy==2.4.3
 scipy==1.17.1
 matplotlib==3.10.8

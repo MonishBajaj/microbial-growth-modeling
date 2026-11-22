@@ -1,4 +1,17 @@
 /*
+  UNO R4 WiFi: read a DS18B20 and POST Celsius to the dashboard.
+
+  Every POST_EVERY_MS the sketch sends:
+    POST https://SERVER_HOST/api/arduino/ingest
+    Authorization: Bearer PUSH_TOKEN
+    {"celsius": <float>, "device_id": DEVICE_ID}
+  Flask stores that in arduino_push.py. The dashboard does not open a
+  connection back to the board.
+
+  WIFI_SSID, WIFI_PASSWORD, and SERVER_HOST in this file are lab values.
+  Change them before you share the sketch. SERVER_HOST must match the current
+  public_base_url.txt or the deployed host. It has no https:// prefix.
+
   UNO R4 WiFi — push Celsius to the microbial growth dashboard.
 
   The board POSTs JSON to your Flask ingest URL. That URL stays the same when

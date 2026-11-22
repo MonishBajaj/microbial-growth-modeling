@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Start Flask on port 5000 and a Cloudflare quick tunnel so an Arduino on
+# another network can POST to /api/arduino/ingest. Writes the tunnel origin
+# to public_base_url.txt. The hostname changes every time this script runs;
+# update SERVER_HOST in temperature_push.ino to match.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"

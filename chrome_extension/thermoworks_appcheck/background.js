@@ -1,3 +1,8 @@
+// Chrome extension service worker.
+// dashboard_bridge.js asks it to open cloud.thermoworks.com in the same tab,
+// mint a Firebase App Check token in the page, and POST {token, ttl, bridge_id}
+// to the dashboard submit URL. A stored job older than 15 minutes is dropped.
+
 async function getJob() {
   const stored = await chrome.storage.session.get('twAppCheckJob');
   const job = stored && stored.twAppCheckJob;

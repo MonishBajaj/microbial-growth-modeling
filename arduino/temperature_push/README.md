@@ -1,5 +1,7 @@
 # Arduino Push (stable public ingest)
 
+How this POST fits the rest of the app is in [docs/USER_GUIDE.md](../../docs/USER_GUIDE.md) under "Arduino push".
+
 The board POSTs Celsius JSON to Flask:
 
 `POST /api/arduino/ingest`  

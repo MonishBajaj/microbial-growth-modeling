@@ -1,4 +1,9 @@
-"""Honest validation for catalog coefficients and legacy consistency."""
+"""Checks that ready catalog coefficients behave as the papers and the old MATLAB match say.
+
+Run from this directory: python test_model_catalog.py
+It prints PASS/FAIL lines and exits non-zero if a check fails. It does not
+talk to MEATER, ThermoWorks, or an Arduino.
+"""
 
 from __future__ import annotations
 

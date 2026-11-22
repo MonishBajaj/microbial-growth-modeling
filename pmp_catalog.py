@@ -1,17 +1,21 @@
-"""Catalog of PMP-linked growth/cooling models for the dashboard.
+"""Catalog of growth and cooling models the dashboard can offer.
 
-Only entries with ``status == 'ready'`` carry coefficients we can defend.
-PMP Online does not publish a parameter API; most models use response-surface
-polynomials that are not freely available as complete coefficient tables here.
-Those stay listed (with food matrix names scraped from PMP Online) but disabled
-until sourced.
+Only status == 'ready' entries have coefficients the integrator is allowed to
+use. The other entries exist so the Bacteria and Food menus match USDA PMP
+Online names, and they stay disabled. require_ready() is what app.py calls
+before a short, full, or sample run.
 
-Ready cooling rates for C. perfringens and C. botulinum use Juneja (2001)
-Ratkowsky parameters (EGR in log10 CFU/h), which match the temperature-only
-+ fixed-defaults rule and the Baranyi dynamic engine already in this project.
+Ready sets today: the project Pseudomonas baseline, Juneja 2001 cooling rates
+for C. perfringens and C. botulinum, and the Bacillus cereus Test_Parameter set.
+Adding a model means a new MODELS entry with coeffs the secondary model
+understands (legacy_quadratic or ratkowsky_sqrt_egr).
 
-Food labels under each bacterium match USDA PMP Online
-(https://pmp.ars.usda.gov/PMPOnline.aspx) Bacteria → Model submenu text.
+PMP Online does not publish a parameter API. Most of its models are
+response-surface polynomials, and this file does not include those full
+tables. Food names still follow the USDA PMP Online Bacteria, then Model,
+submenu (https://pmp.ars.usda.gov/PMPOnline.aspx). The ready cooling rates
+use Juneja (2001) Ratkowsky parameters, with EGR in log10 CFU/h, on the same
+temperature-only Baranyi integrator as the rest of the project.
 """
 
 from __future__ import annotations
