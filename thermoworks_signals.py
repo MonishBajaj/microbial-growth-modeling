@@ -1,8 +1,14 @@
 """
-ThermoWorks Signals (and other Cloud-connected) thermometer collector.
+ThermoWorks Signals collector.
 
-Uses the unofficial thermoworks-cloud library against ThermoWorks Cloud
-(Firestore). Returns the same temperature time-series shape as MEATER / Arduino.
+Reads devices through the thermoworks-cloud library (ThermoWorks Cloud /
+Firestore). Sign-in needs a Firebase App Check token from thermoworks_appcheck.py.
+If THERMOWORKS_SIDECAR_URL is set, list and collect calls are POSTed to the lab
+PC sidecar instead, because a cloud host cannot open Chrome to mint that token.
+
+The selected channel is stored as ambient_temperature, which is the series the
+growth model integrates. A companion channel, when it has a live reading, is
+stored as internal_temperature for the plot only.
 """
 
 from __future__ import annotations
@@ -16,6 +22,12 @@ import numpy as np
 import requests
 from aiohttp import ClientSession, TraceConfig
 
+from run_control import (
+    async_sleep_unless_stopped,
+    is_continuous,
+    sleep_unless_stopped,
+    stop_requested,
+)
 from thermoworks_appcheck import get_app_check_token
 from thermoworks_cloud import AuthFactory, ResourceNotFoundError, ThermoworksCloud
 from thermoworks_cloud.auth import AuthenticationError
@@ -71,6 +83,7 @@ def _collect_via_sidecar(
     serial: Optional[str],
     channel: int,
     log: LogFn = None,
+    model_id: Optional[str] = None,
 ):
     base = _sidecar_url()
     _log(log, f'📡 Collecting via lab ThermoWorks sidecar at {base}…')
@@ -86,6 +99,8 @@ def _collect_via_sidecar(
             'interval_seconds': interval_seconds,
             'serial': serial,
             'channel': channel,
+            # Sidecar rebuilds the same catalog model for the live population estimate.
+            'model_id': model_id,
         },
         timeout=timeout,
     )
@@ -108,6 +123,82 @@ def _collect_via_sidecar(
         'readings_count': data.get('readings_count') or 0,
         'serial': data.get('serial'),
         'channel': data.get('channel'),
+    }
+
+
+SIDECAR_CHUNK_HOURS = 5 / 60.0
+
+
+def _collect_via_sidecar_chunked(
+    email: str,
+    password: str,
+    duration_hours: float,
+    interval_seconds: float,
+    serial: Optional[str],
+    channel: int,
+    log: LogFn = None,
+    model=None,
+    should_stop=None,
+):
+    """Repeat short sidecar collections until stopped or ``duration_hours`` is reached.
+
+    One sidecar call is a single blocking HTTP request that cannot be stopped
+    midway, so a stoppable run asks for SIDECAR_CHUNK_HOURS at a time. Each
+    chunk's times are shifted onto one clock. Reading lines (with the running
+    population estimate) are written here, so numbering and the estimate carry
+    across chunks; the sidecar's own reading lines are dropped.
+    """
+    live = model.live_estimator() if model else None
+    run_start = time.time()
+    end = run_start + duration_hours * 3600.0
+    time_data, ambient, internal = [], [], []
+    device_id = serial_used = channel_used = None
+    chunk = 0
+
+    while time.time() < end and not stop_requested(should_stop):
+        chunk += 1
+        chunk_hours = min(SIDECAR_CHUNK_HOURS, max((end - time.time()) / 3600.0, interval_seconds / 3600.0))
+        offset_h = (time.time() - run_start) / 3600.0
+        lines = []
+        data = _collect_via_sidecar(
+            email, password, chunk_hours, interval_seconds, serial, channel, log=lines.append,
+        )
+        for line in lines:
+            if not line.startswith('🌡️ Reading'):
+                _log(log, line)
+        if data is None or len(data['time_hours']) == 0:
+            _log(log, f'⚠️ Sidecar chunk {chunk} returned no readings.')
+            if not time_data:
+                return None
+            # Sidecar may be restarting; wait before asking again.
+            sleep_unless_stopped(max(30.0, interval_seconds), should_stop)
+            continue
+        device_id = data.get('device_id') or device_id
+        serial_used = data.get('serial') or serial_used
+        channel_used = data.get('channel') or channel_used
+        for t_h, amb, inn in zip(data['time_hours'], data['ambient_temperature'], data['internal_temperature']):
+            t_abs = offset_h + float(t_h)
+            if time_data and t_abs <= time_data[-1]:
+                continue
+            time_data.append(t_abs)
+            ambient.append(float(amb))
+            internal.append(float(inn))
+            _log(
+                log,
+                f'🌡️ Reading #{len(time_data)}: Ch{channel_used or channel} {float(amb):.1f}°C (live probe)'
+                + (live.note(t_abs, float(amb)) if live else ''),
+            )
+
+    if not time_data:
+        return None
+    return {
+        'time_hours': np.array(time_data, dtype=float),
+        'ambient_temperature': np.array(ambient, dtype=float),
+        'internal_temperature': np.array(internal, dtype=float),
+        'device_id': device_id,
+        'readings_count': len(time_data),
+        'serial': serial_used,
+        'channel': channel_used,
     }
 
 
@@ -319,6 +410,8 @@ async def _collect_async(
     duration_hours: float,
     interval_seconds: float,
     log: LogFn,
+    model=None,
+    should_stop=None,
 ):
     time_data = []
     ambient_data = []
@@ -327,24 +420,27 @@ async def _collect_async(
     start = time.time()
     end = start + duration_hours * 3600.0
     reading = 0
+    live = model.live_estimator() if model else None
 
     # Companion channel for MEATER-shaped internal_temperature display only.
     companion = 2 if channel == 1 else 1
 
+    span = 'until stopped' if is_continuous(duration_hours) else f'for {duration_hours:.3f} h'
     _log(
         log,
         f'📡 Collecting Signals channel {channel} on {serial} '
-        f'for {duration_hours:.3f} h every {interval_seconds:.0f}s…',
+        f'{span} every {interval_seconds:.0f}s…',
     )
 
-    while time.time() < end:
+    while time.time() < end and not stop_requested(should_stop):
         try:
             growth_c, companion_c, growth_reason = await _read_pair(
                 client, serial, channel, companion,
             )
         except Exception as exc:
             _log(log, f'⚠️ Read failed: {exc}')
-            await asyncio.sleep(interval_seconds)
+            if await async_sleep_unless_stopped(interval_seconds, should_stop):
+                break
             continue
 
         if growth_c is None:
@@ -356,7 +452,8 @@ async def _collect_async(
                 + (f' ({growth_reason})' if growth_reason else '')
                 + '.',
             )
-            await asyncio.sleep(interval_seconds)
+            if await async_sleep_unless_stopped(interval_seconds, should_stop):
+                break
             continue
 
         elapsed_h = (time.time() - start) / 3600.0
@@ -372,9 +469,11 @@ async def _collect_async(
                 f', companion {companion_c:.1f}°C'
                 if companion_c is not None
                 else ', companion unavailable'
-            ),
+            )
+            + (live.note(elapsed_h, growth_c) if live else ''),
         )
-        await asyncio.sleep(interval_seconds)
+        if await async_sleep_unless_stopped(interval_seconds, should_stop):
+            break
 
     if not time_data:
         return None
@@ -398,18 +497,31 @@ def collect_temperature_data(
     serial: Optional[str] = None,
     channel: int = 1,
     log: LogFn = None,
+    model=None,
+    should_stop=None,
 ):
     """
     Collect a live temperature series from ThermoWorks Cloud for one Signals channel.
 
     The selected channel becomes ambient_temperature (used by the growth model).
+    ``model`` is an optional CorrectedMicrobialGrowthModel; when given, each
+    reading line also shows the running population estimate for the selected channel.
+    ``should_stop`` ends the run early; duration_hours may be
+    run_control.CONTINUOUS to run until stopped. Through the sidecar, such a
+    run is collected in chunks and a stop takes effect at the end of a chunk.
     """
     channel = max(1, int(channel))
     interval_seconds = max(float(interval_seconds), 1.0)
 
     if _sidecar_url():
+        if should_stop is not None or is_continuous(duration_hours):
+            return _collect_via_sidecar_chunked(
+                email, password, duration_hours, interval_seconds, serial, channel,
+                log=log, model=model, should_stop=should_stop,
+            )
         return _collect_via_sidecar(
             email, password, duration_hours, interval_seconds, serial, channel, log=log,
+            model_id=getattr(model, 'model_id', None),
         )
 
     async def work(client):
@@ -443,6 +555,7 @@ def collect_temperature_data(
         _log(log, f"📱 Using {chosen.get('label')} ({use_serial}), channel {use_channel}.")
         return await _collect_async(
             client, use_serial, use_channel, duration_hours, interval_seconds, log,
+            model=model, should_stop=should_stop,
         )
 
     try:

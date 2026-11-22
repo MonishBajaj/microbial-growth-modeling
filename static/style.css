@@ -1,9 +1,9 @@
 @import url('https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
 /*
-  Lab instrument palette for microbial growth + temperature work.
-  Inspired by Mintlify green accents (awesome-design-md) but tuned for this app:
-  deep teal for growth, soft mist canvas, slate ink — not IBM blue/white.
+  Styles for every page under templates/. The app does not load DESIGN.md.
+  Colors are set on :root and reused by class names in the HTML
+  (step cards, source cards, job rows, login card, results grid).
 */
 
 :root {
@@ -734,6 +734,38 @@ a:hover { color: var(--primary-hover); text-decoration: underline; }
 .status-keep-running {
     font-size: 0.85rem;
     color: var(--ink-muted);
+}
+
+/* Continuous monitoring: stop control on the status page */
+.stop-panel {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+    padding: 0.85rem 1rem;
+    border: 1px solid var(--error);
+    border-radius: var(--radius-md);
+    background: var(--error-soft);
+}
+.stop-panel p {
+    flex: 1 1 16rem;
+    margin: 0;
+    font-size: 0.9rem;
+    color: var(--ink-muted);
+}
+.btn-stop {
+    background: var(--error);
+    color: #fff;
+}
+.btn-stop:hover {
+    filter: brightness(0.92);
+}
+.btn-stop:disabled {
+    opacity: 0.6;
+    cursor: default;
+    filter: none;
 }
 
 /* ---- Login ---- */

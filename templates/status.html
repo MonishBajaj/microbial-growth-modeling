@@ -1,3 +1,5 @@
+{# Live progress for one background job. The script polls /api/status/<task_id> and reloads this page when the job finishes so results.html can render.
+   Continuous monitoring (duration 0) has no countdown; the Stop button POSTs /api/stop/<task_id>, the collector ends, and the growth model runs on what was collected. #}
 {% extends "base.html" %}
 {% block title %}Processing — Microbial Growth Analyzer{% endblock %}
 
@@ -8,6 +10,16 @@
             <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">← Back to dashboard</a>
             <span class="status-keep-running">This run keeps going in the background</span>
         </div>
+
+        {% if continuous %}
+        <div class="stop-panel" id="stop-panel">
+            <p>Continuous monitoring runs until you stop it. Stopping ends collection and runs the growth model on every reading so far.</p>
+            <button type="button" class="btn btn-stop" id="stop-btn"
+                    {% if stop_pending %}disabled{% endif %}>
+                {% if stop_pending %}Stopping…{% else %}Stop and analyze{% endif %}
+            </button>
+        </div>
+        {% endif %}
         <h2 id="status-title">Running analysis…</h2>
         <p id="status-text" style="margin-top:0.5rem; color:var(--ink-muted);">
             {% if mode_label %}{{ mode_label }}{% if label %} — {{ label }}{% endif %}.{% endif %}
@@ -16,7 +28,7 @@
 
         <div class="run-timer" id="run-timer" aria-live="polite">
             <div class="run-timer-remaining">
-                <span class="run-timer-label">Time remaining</span>
+                <span class="run-timer-label" id="timer-remaining-label">{% if continuous %}Running for{% else %}Time remaining{% endif %}</span>
                 <strong id="timer-remaining">—:—:—</strong>
             </div>
             <div class="run-timer-meta">
@@ -25,10 +37,10 @@
             </div>
         </div>
 
-        <div class="progress-bar-wrapper">
+        <div class="progress-bar-wrapper"{% if continuous %} hidden{% endif %}>
             <div class="progress-bar" id="progress-bar"></div>
         </div>
-        <p class="progress-pct" id="progress-pct">0%</p>
+        <p class="progress-pct" id="progress-pct"{% if continuous %} hidden{% endif %}>0%</p>
 
         <div class="status-log" id="status-log">
             {% for log in logs %}
@@ -49,6 +61,35 @@
     const remainingEl = document.getElementById('timer-remaining');
     const elapsedEl = document.getElementById('timer-elapsed');
     const totalEl = document.getElementById('timer-total');
+    const stopBtn = document.getElementById('stop-btn');
+    let stopPending = {{ 'true' if stop_pending else 'false' }};
+
+    function markStopping() {
+        stopPending = true;
+        if (stopBtn) {
+            stopBtn.disabled = true;
+            stopBtn.textContent = 'Stopping…';
+        }
+    }
+
+    if (stopBtn) {
+        stopBtn.addEventListener('click', function () {
+            if (!confirm('Stop collecting and run the growth model on the readings so far?')) {
+                return;
+            }
+            markStopping();
+            fetch(`/api/stop/${taskId}`, { method: 'POST' })
+                .then(res => {
+                    if (!res.ok) { throw new Error('stop failed'); }
+                })
+                .catch(() => {
+                    stopPending = false;
+                    stopBtn.disabled = false;
+                    stopBtn.textContent = 'Stop and analyze';
+                    alert('Could not stop the run. Try again.');
+                });
+        });
+    }
 
     let lastPayload = null;
     let tickTimer = null;
@@ -79,6 +120,11 @@
         let remaining = duration > 0 ? Math.max(0, Math.ceil(duration - elapsed)) : null;
         let pct = duration > 0 ? Math.min(95, (elapsed / duration) * 100) : 10;
 
+        if (payload.continuous) {
+            // No end time: show how long it has been running instead of a countdown.
+            remaining = null;
+        }
+
         if (payload.status === 'simulating') {
             remaining = 0;
             pct = 97;
@@ -89,13 +135,21 @@
             statusText.textContent = payload.status === 'error'
                 ? 'Finished with an error.'
                 : 'Finished. Opening results…';
+        } else if (payload.continuous && (stopPending || payload.stop_requested)) {
+            statusText.textContent = 'Stopping — finishing the current reading, then running the growth model…';
+        } else if (payload.continuous) {
+            statusText.textContent = 'Continuous monitoring in progress. Press Stop and analyze when you are done.';
         } else if (payload.mode_label) {
             statusText.textContent = payload.mode_label + ' in progress. Temperatures are still being collected.';
         }
 
-        remainingEl.textContent = remaining == null ? '—' : formatDuration(remaining);
+        if (payload.continuous) {
+            remainingEl.textContent = formatDuration(elapsed);
+        } else {
+            remainingEl.textContent = remaining == null ? '—' : formatDuration(remaining);
+        }
         elapsedEl.textContent = formatDuration(elapsed);
-        totalEl.textContent = duration > 0 ? formatDuration(duration) : '—';
+        totalEl.textContent = duration > 0 ? formatDuration(duration) : (payload.continuous ? 'Until stopped' : '—');
         progressBar.style.width = pct + '%';
         progressPct.textContent = Math.round(pct) + '%';
     }
@@ -105,6 +159,9 @@
             .then(res => res.json())
             .then(data => {
                 lastPayload = data;
+                if (data.stop_requested) {
+                    markStopping();
+                }
                 logEl.innerHTML = '';
                 (data.logs || []).forEach(line => {
                     const div = document.createElement('div');

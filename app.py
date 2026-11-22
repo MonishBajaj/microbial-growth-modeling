@@ -1,6 +1,14 @@
 """
-Microbial Growth Analyzer — Flask Web Application
-Wraps the existing microbial growth analysis code with a web interface.
+Web app for the microbial growth analyzer.
+
+A signed-in user picks a catalog model, a temperature source, and a run mode.
+This file starts that run, stores it as a background job, and serves the pages
+and JSON the dashboard polls.
+
+Temperature collectors all hand back the same series shape:
+time_hours, ambient_temperature, internal_temperature, device_id, readings_count.
+The growth model is fed ambient_temperature. See docs/USER_GUIDE.md for the
+full path, including how each device sends those numbers.
 """
 
 import os
@@ -23,7 +31,16 @@ from flask import (
 )
 from enhanced_meater_api import EnhancedMeaterAPI, extract_live_meater_reading
 from local_accounts import create_profile, reset_password, verify_login
-from job_store import create_job, get_job, job_summary, list_jobs
+from job_store import (
+    clear_stop,
+    create_job,
+    get_job,
+    job_summary,
+    list_jobs,
+    request_stop,
+    stop_requested,
+)
+from run_control import CONTINUOUS
 from corrected_microbial_growth_model import CorrectedMicrobialGrowthModel
 from arduino_serial import collect_temperature_data, list_ports
 from arduino_wifi import (
@@ -120,10 +137,19 @@ def _generate_plot(results):
     """Generate the microbial-growth plot and return it as a base64-encoded PNG."""
     fig, ax1 = plt.subplots(figsize=(12, 8))
 
+    # Runs shorter than an hour are drawn in minutes so 6 min reads as 0–6, not 0–0.1.
+    t_hours = np.asarray(results['time'], dtype=float)
+    span_h = float(t_hours[-1] - t_hours[0]) if t_hours.size else 0.0
+    if span_h < 1.0:
+        t_scale, t_unit = 60.0, 'min'
+    else:
+        t_scale, t_unit = 1.0, 'h'
+    t_plot = t_hours * t_scale
+
     ylabel = results.get('population_label') or 'Population (Log CFU/g)'
-    ax1.plot(results['time'], results['population'], 'b-', linewidth=2,
+    ax1.plot(t_plot, results['population'], 'b-', linewidth=2,
              label='Predicted Population')
-    ax1.set_xlabel('Time (h)', fontsize=14)
+    ax1.set_xlabel(f'Time ({t_unit})', fontsize=14)
     ax1.set_ylabel(ylabel, fontsize=14, color='blue')
     ax1.set_ylim(0, 10)
     ax1.tick_params(axis='y', labelcolor='blue')
@@ -135,15 +161,18 @@ def _generate_plot(results):
                        8.048, 7.856, 8.124, 8.233, 8.093, 8.206])
         Err = np.array([0.229, 0.047, 0.282, 0.174, 0.143, 0.036, 0.136, 0.324,
                         0.203, 0.017, 0.026, 0.008, 0.028, 0.110])
-        ax1.errorbar(Tv, Yv, yerr=Err, fmt='ro', capsize=5, capthick=2,
+        ax1.errorbar(Tv * t_scale, Yv, yerr=Err, fmt='ro', capsize=5, capthick=2,
                      markersize=6, label='Experimental Data')
     ax1.legend()
+    # Fit the time axis to the run itself; overlay points outside it are clipped.
+    if t_plot.size and t_plot[-1] > t_plot[0]:
+        ax1.set_xlim(t_plot[0], t_plot[-1])
 
     ax2 = ax1.twinx()
     data_source = results.get('data_source', 'UNKNOWN')
     live_sources = {'MEATER_REALTIME', 'ARDUINO', 'ARDUINO_WIFI', 'ARDUINO_PUSH', 'SIGNALS'}
     ls = '-' if data_source in live_sources else '--'
-    ax2.plot(results['time'], results['temperature'], f'r{ls}', linewidth=2,
+    ax2.plot(t_plot, results['temperature'], f'r{ls}', linewidth=2,
              label='Temperature')
     ax2.set_ylabel('Temperature (°C)', fontsize=14, color='red')
     tmin = float(np.min(results['temperature']))
@@ -213,15 +242,61 @@ def _resolve_model(model_id):
         return None, str(exc)
 
 
+def _live_rate_model(model_id=None):
+    """Model whose running population estimate is printed beside quick-test readings.
+
+    Uses the selected model when it is ready, otherwise the default
+    Pseudomonas entry. Returns None only if neither can be built.
+    """
+    model, err = _resolve_model(model_id)
+    if err:
+        model, _ = _resolve_model(DEFAULT_MODEL_ID)
+    return model
+
+
+def _model_unavailable(info, err):
+    info['logs'].append(f'❌ Model unavailable: {err}')
+    info['status'] = 'error'
+    info['result'] = {'error': err}
+
+
+# Collection modes that end in a growth simulation:
+# mode -> (duration_hours, interval_seconds, mode_name shown on the results page)
+LIVE_RUNS = {
+    '2': (0.1, 2, 'Short Real-time Analysis'),
+    '3': (8.0, 60, 'Full Real-time Analysis'),
+    # Runs until the user presses Stop on the status page.
+    '5': (CONTINUOUS, 30, 'Continuous Monitoring'),
+}
+
+
+def _stop_check(task_id):
+    """Callable the collectors poll; True once Stop was pressed for this job."""
+    return lambda: stop_requested(task_id)
+
+
+def _note_if_stopped(info, task_id, temp_data):
+    """Log an early stop and remove the stop marker."""
+    if stop_requested(task_id):
+        count = temp_data['readings_count'] if temp_data else 0
+        info['logs'].append(
+            f'⏹ Stopped after {count} readings. '
+            + ('Running the growth model on everything collected.' if count else '')
+        )
+    clear_stop(task_id)
+
+
 # ---------------------------------------------------------------------------
 # Background-task runner (modes 1–3)
 # ---------------------------------------------------------------------------
 
-def _run_mode1(task_id, email, password):
+def _run_mode1(task_id, email, password, model_id=None):
     """Mode 1 — Quick Connection Test (background)."""
     info = _bind_job(task_id)
     if info is None:
         return
+    model = _live_rate_model(model_id)
+    live = model.live_estimator() if model else None
     info['logs'].append('🔐 Authenticating with MEATER Cloud API...')
     info['status'] = 'authenticating'
 
@@ -255,7 +330,8 @@ def _run_mode1(task_id, email, password):
     info['status'] = 'testing'
 
     # Collect a few readings over ~30 seconds
-    end_time = time.time() + 30
+    start_time = time.time()
+    end_time = start_time + 30
     readings = 0
     temperatures = []
 
@@ -268,6 +344,7 @@ def _run_mode1(task_id, email, password):
             info['logs'].append(
                 f"🌡️ Reading #{readings}: Internal {internal_c:.1f}°C, "
                 f"Ambient {ambient_c:.1f}°C (live probe)"
+                + (live.note((time.time() - start_time) / 3600, ambient_c) if live else '')
             )
         else:
             reason = (meta or {}).get('reason') or api.last_reject_reason or 'not a live probe'
@@ -295,9 +372,13 @@ def _run_mode2_3(
     task_id, email, password, duration_hours, interval_seconds, mode_name,
     model_id=DEFAULT_MODEL_ID,
 ):
-    """Modes 2 & 3 — Real-time analysis (background)."""
+    """Modes 2, 3 and 5 — MEATER real-time analysis (background)."""
     info = _bind_job(task_id)
     if info is None:
+        return
+    model, err = _resolve_model(model_id)
+    if err:
+        _model_unavailable(info, err)
         return
     info['logs'].append('🔐 Authenticating...')
     info['status'] = 'authenticating'
@@ -327,7 +408,11 @@ def _run_mode2_3(
         device_id=device_id,
         duration_hours=duration_hours,
         interval_seconds=max(interval_seconds, 2),
+        model=model,
+        log=info['logs'].append,
+        should_stop=_stop_check(task_id),
     )
+    _note_if_stopped(info, task_id, temp_data)
 
     if temp_data is None:
         info['logs'].append('❌ Failed to collect temperature data.')
@@ -335,16 +420,27 @@ def _run_mode2_3(
         info['result'] = {'error': 'Failed to collect temperature data.'}
         return
 
-    _finish_analysis(info, temp_data, 'MEATER_REALTIME', mode_name, model_id=model_id)
+    _finish_analysis(info, temp_data, 'MEATER_REALTIME', mode_name, model=model)
 
 
-def _finish_analysis(info, temp_data, data_source, mode_name, model_id=DEFAULT_MODEL_ID):
-    """Run the growth model on a collected temperature series and store the plot."""
-    model, err = _resolve_model(model_id)
-    if err:
-        info['logs'].append(f'❌ Model unavailable: {err}')
+def _finish_analysis(
+    info, temp_data, data_source, mode_name, model_id=DEFAULT_MODEL_ID, model=None,
+):
+    """Run the growth model on a collected temperature series and store the plot.
+
+    Pass ``model`` to reuse the instance built before collection.
+    """
+    if model is None:
+        model, err = _resolve_model(model_id)
+        if err:
+            _model_unavailable(info, err)
+            return
+
+    if len(temp_data['time_hours']) < 2:
+        msg = 'Need at least two temperature readings to simulate growth.'
+        info['logs'].append(f'❌ {msg}')
         info['status'] = 'error'
-        info['result'] = {'error': err}
+        info['result'] = {'error': msg}
         return
 
     info['logs'].append(
@@ -370,11 +466,12 @@ def _finish_analysis(info, temp_data, data_source, mode_name, model_id=DEFAULT_M
     }
 
 
-def _run_live_test(task_id, label, collect):
+def _run_live_test(task_id, label, collect, model_id=None):
     """Mode 1 — quick connection test for USB or Wi-Fi."""
     info = _bind_job(task_id)
     if info is None:
         return
+    model = _live_rate_model(model_id)
     info['logs'].append(f'🔍 Testing {label}...')
     info['status'] = 'testing'
 
@@ -382,6 +479,7 @@ def _run_live_test(task_id, label, collect):
         duration_hours=30 / 3600,
         interval_seconds=2,
         log=info['logs'].append,
+        model=model,
     )
 
     if temp_data is None:
@@ -410,9 +508,13 @@ def _run_live_analysis(
     task_id, label, data_source, duration_hours, interval_seconds, mode_name, collect,
     model_id=DEFAULT_MODEL_ID,
 ):
-    """Modes 2 and 3 — collect USB or Wi-Fi temperatures and run the growth model."""
+    """Modes 2, 3 and 5 — collect device temperatures and run the growth model."""
     info = _bind_job(task_id)
     if info is None:
+        return
+    model, err = _resolve_model(model_id)
+    if err:
+        _model_unavailable(info, err)
         return
     info['logs'].append(f'📡 Collecting data from {label}...')
     info['status'] = 'collecting'
@@ -421,7 +523,10 @@ def _run_live_analysis(
         duration_hours=duration_hours,
         interval_seconds=max(interval_seconds, 1),
         log=info['logs'].append,
+        model=model,
+        should_stop=_stop_check(task_id),
     )
+    _note_if_stopped(info, task_id, temp_data)
 
     if temp_data is None:
         info['logs'].append('❌ Failed to collect temperature data.')
@@ -429,7 +534,7 @@ def _run_live_analysis(
         info['result'] = {'error': f'Failed to collect temperature data from {label}.'}
         return
 
-    _finish_analysis(info, temp_data, data_source, mode_name, model_id=model_id)
+    _finish_analysis(info, temp_data, data_source, mode_name, model=model)
 
 
 # ---------------------------------------------------------------------------
@@ -742,7 +847,7 @@ def analyze():
     email = session.get('email')
     password = session.get('password')
 
-    if mode in ('2', '3', '4'):
+    if mode in ('2', '3', '4', '5'):
         _, model_err = require_ready(model_id)
         if model_err:
             flash(model_err, 'error')
@@ -769,7 +874,7 @@ def analyze():
                                stats=stats,
                                mode_name='Sample Data Analysis')
 
-    elif mode in ('1', '2', '3'):
+    elif mode == '1' or mode in LIVE_RUNS:
         if source == 'arduino_usb' and not port:
             flash('Select an Arduino serial port.', 'error')
             return redirect(url_for('dashboard'))
@@ -786,15 +891,17 @@ def analyze():
 
         # Collection window by mode (simulation after collect is usually short).
         if mode == '1':
-            duration_hours = 30 / 3600.0
+            duration_seconds = 30
             mode_label = 'Quick connection test'
-        elif mode == '2':
-            duration_hours = 0.1
-            mode_label = 'Short analysis'
         else:
-            duration_hours = 8.0
-            mode_label = 'Full analysis'
-        duration_seconds = int(duration_hours * 3600)
+            run_hours, run_interval, run_name = LIVE_RUNS[mode]
+            mode_label = {
+                '2': 'Short analysis',
+                '3': 'Full analysis',
+                '5': 'Continuous monitoring',
+            }[mode]
+            # 0 marks an open-ended run: no countdown, ends when Stop is pressed.
+            duration_seconds = 0 if mode == '5' else int(run_hours * 3600)
 
         task_id = str(uuid.uuid4())
         owner = (session.get('email') or email or '').lower()
@@ -806,42 +913,29 @@ def analyze():
             'meater': 'MEATER',
         }.get(source, source or 'MEATER')
 
+        def device_run(label, data_source, collect):
+            """Quick test or a LIVE_RUNS analysis for one non-MEATER source."""
+            if mode == '1':
+                return _run_live_test, (task_id, label, collect, model_id)
+            return _run_live_analysis, (
+                task_id, label, data_source, run_hours, run_interval, run_name,
+                collect, model_id,
+            )
+
         if source == 'arduino_usb':
             label = f'Arduino USB on {port}'
 
             def collect_usb(**kwargs):
                 return collect_temperature_data(port, **kwargs)
 
-            if mode == '1':
-                target, args = _run_live_test, (task_id, label, collect_usb)
-            elif mode == '2':
-                target, args = _run_live_analysis, (
-                    task_id, label, 'ARDUINO', 0.1, 2, 'Short Real-time Analysis',
-                    collect_usb, model_id,
-                )
-            else:
-                target, args = _run_live_analysis, (
-                    task_id, label, 'ARDUINO', 8.0, 60, 'Full Real-time Analysis',
-                    collect_usb, model_id,
-                )
+            target, args = device_run(label, 'ARDUINO', collect_usb)
         elif source == 'arduino_wifi':
             label = f'Arduino WiFi at {wifi_host}'
 
             def collect_wifi(**kwargs):
                 return collect_wifi_temperature_data(wifi_host, **kwargs)
 
-            if mode == '1':
-                target, args = _run_live_test, (task_id, label, collect_wifi)
-            elif mode == '2':
-                target, args = _run_live_analysis, (
-                    task_id, label, 'ARDUINO_WIFI', 0.1, 2, 'Short Real-time Analysis',
-                    collect_wifi, model_id,
-                )
-            else:
-                target, args = _run_live_analysis, (
-                    task_id, label, 'ARDUINO_WIFI', 8.0, 60, 'Full Real-time Analysis',
-                    collect_wifi, model_id,
-                )
+            target, args = device_run(label, 'ARDUINO_WIFI', collect_wifi)
         elif source == 'arduino_push':
             label = f'Arduino Push {push_device_id or "(any device)"}'
 
@@ -851,18 +945,7 @@ def analyze():
                     **kwargs,
                 )
 
-            if mode == '1':
-                target, args = _run_live_test, (task_id, label, collect_push)
-            elif mode == '2':
-                target, args = _run_live_analysis, (
-                    task_id, label, 'ARDUINO_PUSH', 0.1, 2, 'Short Real-time Analysis',
-                    collect_push, model_id,
-                )
-            else:
-                target, args = _run_live_analysis, (
-                    task_id, label, 'ARDUINO_PUSH', 8.0, 60, 'Full Real-time Analysis',
-                    collect_push, model_id,
-                )
+            target, args = device_run(label, 'ARDUINO_PUSH', collect_push)
         elif source == 'signals':
             label = (
                 f'ThermoWorks Signals {signals_serial or "(auto)"} '
@@ -878,31 +961,15 @@ def analyze():
                     **kwargs,
                 )
 
-            if mode == '1':
-                target, args = _run_live_test, (task_id, label, collect_signals)
-            elif mode == '2':
-                target, args = _run_live_analysis, (
-                    task_id, label, 'SIGNALS', 0.1, 2, 'Short Real-time Analysis',
-                    collect_signals, model_id,
-                )
-            else:
-                target, args = _run_live_analysis, (
-                    task_id, label, 'SIGNALS', 8.0, 60, 'Full Real-time Analysis',
-                    collect_signals, model_id,
-                )
-        elif mode == '1':
-            label = 'MEATER Cloud'
-            target, args = _run_mode1, (task_id, email, password)
-        elif mode == '2':
-            label = 'MEATER Cloud'
-            target, args = _run_mode2_3, (
-                task_id, email, password, 0.1, 2, 'Short Real-time Analysis', model_id,
-            )
+            target, args = device_run(label, 'SIGNALS', collect_signals)
         else:
             label = 'MEATER Cloud'
-            target, args = _run_mode2_3, (
-                task_id, email, password, 8.0, 60, 'Full Real-time Analysis', model_id,
-            )
+            if mode == '1':
+                target, args = _run_mode1, (task_id, email, password, model_id)
+            else:
+                target, args = _run_mode2_3, (
+                    task_id, email, password, run_hours, run_interval, run_name, model_id,
+                )
 
         job = create_job(
             task_id,
@@ -959,10 +1026,17 @@ def task_status_page(task_id):
         'status.html',
         task_id=task_id,
         status=task['status'],
-        logs=task['logs'],
+        logs=list(task['logs'])[-STATUS_LOG_LINES:],
         mode_label=task.get('mode_label') or '',
         label=task.get('label') or '',
+        continuous=int(task.get('duration_seconds') or 0) == 0,
+        stop_pending=stop_requested(task_id),
     )
+
+
+# Status polls send only the newest log lines: a continuous run can collect for
+# days, and the page refreshes every 2 seconds. The full log stays in the job file.
+STATUS_LOG_LINES = 500
 
 
 @app.route('/api/status/<task_id>')
@@ -988,9 +1062,13 @@ def api_task_status(task_id):
         remaining = 0
         progress_pct = 100.0
 
+    all_logs = list(task.get('logs') or [])
     return jsonify({
         'status': task['status'],
-        'logs': list(task.get('logs') or []),
+        'logs': all_logs[-STATUS_LOG_LINES:],
+        'logs_total': len(all_logs),
+        'continuous': duration_seconds == 0,
+        'stop_requested': stop_requested(task_id),
         'done': task['status'] in ('done', 'error'),
         'mode_label': task.get('mode_label') or '',
         'label': task.get('label') or '',
@@ -1000,6 +1078,19 @@ def api_task_status(task_id):
         'remaining_seconds': remaining,
         'progress_pct': round(progress_pct, 1),
     })
+
+
+@app.route('/api/stop/<task_id>', methods=['POST'])
+@login_required
+def api_stop_task(task_id):
+    """Stop collecting for a run; the runner then simulates what it has."""
+    task = _bind_job(task_id)
+    if not task or not _job_owned_by_session(task):
+        return jsonify({'error': 'not_found'}), 404
+    if task['status'] in ('done', 'error'):
+        return jsonify({'ok': True, 'already_finished': True})
+    request_stop(task_id)
+    return jsonify({'ok': True})
 
 
 @app.route('/api/jobs')

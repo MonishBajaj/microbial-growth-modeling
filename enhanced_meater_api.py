@@ -1,3 +1,17 @@
+"""
+MEATER Cloud client used by the web app.
+
+Login is POST https://public-api.cloud.meater.com/v1/login with the dashboard
+account email and password. Device reads are GET /devices and GET /devices/{id}
+with the returned bearer token. extract_live_meater_reading drops samples that
+are stale, missing a timestamp, or outside a sane Celsius range, so a leftover
+cloud value is not treated as a live probe.
+
+The web app calls collect_temperature_data_realtime. The returned arrays use
+the shared series shape (time_hours, internal_temperature, ambient_temperature).
+The growth model later uses the ambient series.
+"""
+
 import os
 import requests
 import time
@@ -6,6 +20,8 @@ import numpy as np
 from datetime import datetime
 import threading
 import sys
+
+from run_control import is_continuous, sleep_unless_stopped, stop_requested
 
 
 def _meater_probe_max_age_sec():
@@ -250,7 +266,10 @@ class EnhancedMeaterAPI:
             print(f"\r❌ {datetime.now().strftime('%H:%M:%S')} | Error: {e}", end="", flush=True)
             return None
 
-    def collect_temperature_data_realtime(self, device_id=None, duration_hours=2, interval_seconds=1):
+    def collect_temperature_data_realtime(
+        self, device_id=None, duration_hours=2, interval_seconds=1, model=None, log=None,
+        should_stop=None,
+    ):
         """
         Collect temperature data with enhanced real-time display
 
@@ -258,6 +277,11 @@ class EnhancedMeaterAPI:
         device_id: ID of specific device (if None, uses first available)
         duration_hours: How long to collect data (hours)
         interval_seconds: How often to collect data (seconds, minimum 2)
+        model: optional CorrectedMicrobialGrowthModel; each live reading also
+            shows the running population estimate from the ambient series
+        log: optional callable that receives one line per live reading
+        should_stop: optional callable; when it returns True collection ends
+            early. duration_hours may be run_control.CONTINUOUS to run until stopped.
 
         Returns:
         dict: Time series temperature data
@@ -281,10 +305,12 @@ class EnhancedMeaterAPI:
         self.current_device_id = device_id
 
         print(f"\n📊 Starting real-time data collection:")
-        print(f"   Duration: {duration_hours} hours")
-        print(f"   Interval: {interval_seconds} seconds") 
+        continuous = is_continuous(duration_hours)
+        print("   Duration: until stopped" if continuous else f"   Duration: {duration_hours} hours")
+        print(f"   Interval: {interval_seconds} seconds")
         print(f"   Device ID: {device_id}")
-        print(f"   Total readings: ~{int(duration_hours * 3600 / interval_seconds)}")
+        if not continuous:
+            print(f"   Total readings: ~{int(duration_hours * 3600 / interval_seconds)}")
         print("\n🔴 LIVE DATA (Press Ctrl+C to stop early):")
         print("=" * 80)
 
@@ -295,10 +321,11 @@ class EnhancedMeaterAPI:
         start_time = time.time()
         end_time = start_time + (duration_hours * 3600)
         reading_count = 0
+        live = model.live_estimator() if model else None
 
         skipped = 0
         try:
-            while time.time() < end_time:
+            while time.time() < end_time and not stop_requested(should_stop):
                 device_data = self.get_device_realtime(device_id)
                 internal_temp, ambient_temp, meta = extract_live_meater_reading(device_data) if device_data else (None, None, {})
 
@@ -308,14 +335,21 @@ class EnhancedMeaterAPI:
                     internal_temp_data.append(internal_temp)
                     ambient_temp_data.append(ambient_temp)
                     reading_count += 1
-                    sys.stdout.write(f" | #{reading_count}")
+                    pop_note = live.note(current_time, ambient_temp) if live else ""
+                    sys.stdout.write(f" | #{reading_count}{pop_note}")
                     sys.stdout.flush()
+                    if log is not None:
+                        log(
+                            f"🌡️ Reading #{reading_count}: Internal {internal_temp:.1f}°C, "
+                            f"Ambient {ambient_temp:.1f}°C (live probe)" + pop_note
+                        )
                 else:
                     skipped += 1
                     reason = (meta or {}).get('reason') or self.last_reject_reason or 'not live'
                     print(f"\n⚠️  Skipped non-live MEATER sample ({reason})")
 
-                time.sleep(interval_seconds)
+                if sleep_unless_stopped(interval_seconds, should_stop):
+                    break
 
         except KeyboardInterrupt:
             print(f"\n\n⏹️  Data collection stopped by user after {len(time_data)} readings")

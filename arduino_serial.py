@@ -9,6 +9,8 @@ import time
 
 import numpy as np
 
+from run_control import sleep_unless_stopped, stop_requested
+
 try:
     import serial
     import serial.tools.list_ports
@@ -71,10 +73,17 @@ def _read_latest(ser):
     return _parse_celsius(raw)
 
 
-def collect_temperature_data(port, duration_hours, interval_seconds=2, baud=9600, log=None):
+def collect_temperature_data(
+    port, duration_hours, interval_seconds=2, baud=9600, log=None, model=None, should_stop=None,
+):
     """Collect a time series in the same shape as the MEATER collector.
 
     ``log`` is an optional callable that receives progress strings.
+    ``model`` is an optional CorrectedMicrobialGrowthModel; when given, each
+    reading line also shows the running population estimate.
+    ``should_stop`` is an optional callable; when it returns True the run ends
+    early and the readings so far are returned. duration_hours may be
+    run_control.CONTINUOUS to run until stopped.
     Returns None when the port cannot be opened or no readings arrive.
     """
     def _log(message):
@@ -86,6 +95,7 @@ def collect_temperature_data(port, duration_hours, interval_seconds=2, baud=9600
         return None
 
     interval_seconds = max(interval_seconds, 1)
+    live = model.live_estimator() if model else None
     time_data = []
     temps = []
 
@@ -97,15 +107,19 @@ def collect_temperature_data(port, duration_hours, interval_seconds=2, baud=9600
 
             start = time.time()
             end = start + (duration_hours * 3600)
-            while time.time() < end:
+            while time.time() < end and not stop_requested(should_stop):
                 celsius = _read_latest(ser)
                 if celsius is None:
                     continue
                 elapsed_hours = (time.time() - start) / 3600
                 time_data.append(elapsed_hours)
                 temps.append(celsius)
-                _log(f'🌡️ Reading #{len(temps)}: {celsius:.1f}°C')
-                time.sleep(interval_seconds)
+                _log(
+                    f'🌡️ Reading #{len(temps)}: {celsius:.1f}°C'
+                    + (live.note(elapsed_hours, celsius) if live else '')
+                )
+                if sleep_unless_stopped(interval_seconds, should_stop):
+                    break
     except serial.SerialException as exc:
         _log(f'❌ Could not read {port}: {exc}')
         return None

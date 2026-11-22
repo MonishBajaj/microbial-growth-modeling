@@ -66,6 +66,18 @@ def devices():
         return jsonify({'error': str(exc), 'devices': []}), 502
 
 
+def _live_rate_model(model_id):
+    """Catalog model for the live population estimate, or None if it cannot be built."""
+    model_id = (model_id or '').strip() if isinstance(model_id, str) else ''
+    if not model_id:
+        return None
+    try:
+        from corrected_microbial_growth_model import CorrectedMicrobialGrowthModel
+        return CorrectedMicrobialGrowthModel.from_catalog(model_id)
+    except Exception:
+        return None
+
+
 @app.post('/v1/collect')
 def collect():
     if not _authorized():
@@ -82,6 +94,7 @@ def collect():
     except (TypeError, ValueError):
         return jsonify({'error': 'Invalid duration, interval, or channel.'}), 400
     serial = (payload.get('serial') or '').strip() or None
+    model = _live_rate_model(payload.get('model_id'))
     logs = []
     temp_data = collect_temperature_data(
         email,
@@ -91,6 +104,7 @@ def collect():
         serial=serial,
         channel=channel,
         log=logs.append,
+        model=model,
     )
     if temp_data is None:
         return jsonify({'error': 'No temperature readings collected.', 'logs': logs}), 502

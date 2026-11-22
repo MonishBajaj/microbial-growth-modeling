@@ -1,7 +1,15 @@
-"""Arduino → Flask temperature push (works on any hosted server).
+"""In-memory buffer for temperatures an Arduino POSTs to the server.
 
-Boards POST Celsius readings to ``/api/arduino/ingest``. Analysis modes
-read from an in-memory ring buffer — same time-series shape as MEATER.
+The board does not wait for the dashboard. It sends JSON to
+POST /api/arduino/ingest (see app.arduino_ingest). record_reading() appends
+each sample. When the user starts a push run, collect_temperature_data()
+reads this buffer for the requested duration and returns the shared series
+shape. The buffer lives in this process only; a restart drops it.
+
+Auth for the POST is ARDUINO_PUSH_TOKEN (default microbial-lab-token), sent as
+Authorization: Bearer or as a token field. PUBLIC_BASE_URL or
+public_base_url.txt is the origin shown to the board. The returned series
+uses the same field names as the MEATER and Signals collectors.
 """
 
 from __future__ import annotations
@@ -13,6 +21,8 @@ from collections import deque
 from typing import Callable, Deque, Dict, List, Optional
 
 import numpy as np
+
+from run_control import sleep_unless_stopped, stop_requested
 
 LogFn = Optional[Callable[[str], None]]
 
@@ -129,15 +139,28 @@ def collect_temperature_data(
     interval_seconds: float = 2,
     device_id: Optional[str] = None,
     log: LogFn = None,
+    model=None,
+    should_stop=None,
 ):
     """
     Collect from the push buffer for ``duration_hours``.
+
+    ``model`` is an optional CorrectedMicrobialGrowthModel; when given, each
+    reading line also shows the running population estimate.
+    ``should_stop`` ends the run early; duration_hours may be
+    run_control.CONTINUOUS to run until stopped.
 
     Waits for new samples when possible; also accepts recent buffered points
     that arrived just before the run started.
     """
     interval_seconds = max(float(interval_seconds), 1.0)
     duration_hours = max(float(duration_hours), interval_seconds / 3600.0)
+
+    live = model.live_estimator() if model else None
+
+    def pop(t_hours, celsius):
+        return live.note(t_hours, celsius) if live else ''
+
     wanted = (device_id or '').strip() or None
 
     _log(log, '📡 Waiting for Arduino push readings…')
@@ -165,10 +188,14 @@ def collect_temperature_data(
                 used_device = record['device_id']
                 time_data.append(0.0)
                 temps.append(record['celsius'])
-                _log(log, f"🌡️ Seed reading: {record['celsius']:.1f}°C from {used_device}")
+                _log(
+                    log,
+                    f"🌡️ Seed reading: {record['celsius']:.1f}°C from {used_device}"
+                    + pop(0.0, record['celsius']),
+                )
             break
 
-    while time.time() < end:
+    while time.time() < end and not stop_requested(should_stop):
         picked = None
         with _BUFFER_LOCK:
             for record in reversed(_READINGS):
@@ -196,7 +223,7 @@ def collect_temperature_data(
             _log(
                 log,
                 f"🌡️ Reading #{len(temps)}: {picked['celsius']:.1f}°C "
-                f"({used_device})",
+                f"({used_device})" + pop(elapsed, picked['celsius']),
             )
         elif picked is not None and time_data:
             # Hold last value on the sampling grid so short runs still fill.
@@ -208,10 +235,11 @@ def collect_temperature_data(
                 _log(
                     log,
                     f"🌡️ Reading #{len(temps)}: {picked['celsius']:.1f}°C "
-                    f"(held, {used_device})",
+                    f"(held, {used_device})" + pop(elapsed, picked['celsius']),
                 )
 
-        time.sleep(interval_seconds)
+        if sleep_unless_stopped(interval_seconds, should_stop):
+            break
 
     if not time_data:
         _log(log, '❌ No push readings arrived. Is the board POSTing to /api/arduino/ingest?')

@@ -1,3 +1,7 @@
+{# Main screen. The form posts to /analyze with model_id, source, and mode.
+   Step 1 loads /api/models. Step 2 shows one panel per temperature source and
+   calls /api/arduino/ports, /api/arduino/wifi, /api/arduino/push_status, or
+   /api/signals/devices. The script below the form only updates those controls. #}
 {% extends "base.html" %}
 {% block title %}Dashboard — Microbial Growth Analyzer{% endblock %}
 
@@ -31,7 +35,9 @@
                     </div>
                     <div class="job-meta">
                         <span class="job-status">{{ job.status }}</span>
-                        {% if job.running and job.remaining_seconds is not none %}
+                        {% if job.running and job.continuous %}
+                        <span>Until stopped</span>
+                        {% elif job.running and job.remaining_seconds is not none %}
                         <span>~{{ (job.remaining_seconds // 60) }}m {{ (job.remaining_seconds % 60) }}s left</span>
                         {% endif %}
                     </div>
@@ -231,6 +237,11 @@
                             <div class="mode-card-desc">Extended live monitoring (~8 hours), then run the selected model.</div>
                             <span class="mode-card-badge badge-meater">Device • ~8 hours</span>
                         </div>
+                        <div class="mode-card" data-mode="5" onclick="selectMode(this, '5')">
+                            <div class="mode-card-title">Continuous monitoring</div>
+                            <div class="mode-card-desc">Keeps collecting every 30 seconds with a live population estimate until you press Stop, then runs the selected model on everything collected.</div>
+                            <span class="mode-card-badge badge-meater">Device • until stopped</span>
+                        </div>
                         <div class="mode-card" data-mode="4" onclick="selectMode(this, '4')">
                             <div class="mode-card-title">Sample data (demo)</div>
                             <div class="mode-card-desc">Synthetic sine-wave temperatures — no device. Good for checking the pipeline.</div>
@@ -299,7 +310,8 @@
             list.innerHTML = jobs.map(function (job) {
                 const href = statusBase.replace('__ID__', encodeURIComponent(job.task_id));
                 const cls = job.running ? 'is-running' : (job.ok ? 'is-done' : 'is-error');
-                const remain = job.running ? '<span>' + formatRemain(job.remaining_seconds) + '</span>' : '';
+                const remain = !job.running ? '' :
+                    '<span>' + (job.continuous ? 'Until stopped' : formatRemain(job.remaining_seconds)) + '</span>';
                 return (
                     '<a class="job-row ' + cls + '" href="' + href + '">' +
                     '<div class="job-main"><strong>' + (job.mode_label || 'Analysis') + '</strong>' +
@@ -331,6 +343,7 @@
         '1': 'Quick connection test',
         '2': 'Short analysis',
         '3': 'Full analysis',
+        '5': 'Continuous monitoring',
         '4': 'Sample data (demo)'
     };
 
@@ -1111,6 +1124,7 @@
             '1': 'Run connection test',
             '2': 'Run short analysis',
             '3': 'Run full analysis',
+            '5': 'Start continuous monitoring',
             '4': 'Run sample analysis'
         };
         btn.textContent = labels[mode] || 'Run analysis';
@@ -1196,6 +1210,7 @@
             '1': ['Testing connection…', 'Connecting to ' + deviceLabel + ' (~30 seconds)'],
             '2': ['Running short analysis…', 'Collecting ' + deviceLabel + ' temperatures (~6 minutes)'],
             '3': ['Running full analysis…', 'Extended ' + deviceLabel + ' collection (~8 hours)'],
+            '5': ['Starting continuous monitoring…', 'Collecting ' + deviceLabel + ' temperatures until you stop'],
             '4': ['Analyzing sample data…', 'Running growth simulation on synthetic temperatures']
         };
 

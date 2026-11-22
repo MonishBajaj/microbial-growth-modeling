@@ -1,4 +1,13 @@
-"""Persistent background analysis jobs (survive leaving the status page / multi-worker)."""
+"""Disk-backed record of each analysis run.
+
+app.py starts collection on a background thread and writes status here so the
+user can leave /status/<id> and open the run later from the dashboard. Each job
+is one JSON file under job_store/ (or JOB_STORE_DIR). The in-memory JobRecord
+keeps the plot image; persist() also writes a JSON-safe copy, including
+image_data, so another gunicorn worker can render the results page.
+
+Jobs are filtered by the signed-in email (the owner field).
+"""
 
 from __future__ import annotations
 
@@ -20,6 +29,34 @@ _CACHE: dict = {}
 def _path(task_id: str) -> str:
     safe = "".join(ch for ch in task_id if ch.isalnum() or ch in "-_")
     return os.path.join(_DIR, f"{safe}.json")
+
+
+def _stop_path(task_id: str) -> str:
+    return _path(task_id)[:-5] + ".stop"
+
+
+def request_stop(task_id: str) -> None:
+    """Ask a running job to stop collecting and analyze what it has.
+
+    This is a marker file, not a field on the job JSON: the runner thread
+    rewrites the JSON on every log line from its own memory, so a flag written
+    there by another gunicorn worker could be overwritten before it is seen.
+    """
+    with _LOCK:
+        os.makedirs(_DIR, exist_ok=True)
+        with open(_stop_path(task_id), "w", encoding="utf-8") as handle:
+            handle.write(str(time.time()))
+
+
+def stop_requested(task_id: str) -> bool:
+    return os.path.exists(_stop_path(task_id))
+
+
+def clear_stop(task_id: str) -> None:
+    try:
+        os.remove(_stop_path(task_id))
+    except OSError:
+        pass
 
 
 def _serialize_result(result):
@@ -140,6 +177,9 @@ def create_job(
             "source": source or "",
         },
     )
+    # In-memory only (persist() writes a fixed key list): this process runs the
+    # job, so its object is the source of truth and get_job must not overwrite it.
+    dict.__setitem__(job, "_owned", True)
     job.persist()
     return job
 
@@ -148,6 +188,12 @@ def get_job(task_id: str, *, prefer_cache: bool = False) -> Optional[JobRecord]:
     """Load a job. Default reloads from disk so other gunicorn workers see updates."""
     with _LOCK:
         cached = _CACHE.get(task_id)
+        if cached is not None and cached.get("_owned"):
+            # This process runs the job and is the only writer of its file.
+            # Copying the disk version back would race with the runner: a poll
+            # could read the file just before a status change and then write the
+            # old status onto the runner's object (e.g. 'collecting' -> 'starting').
+            return cached
         path = _path(task_id)
         try:
             mtime = os.path.getmtime(path)
@@ -218,7 +264,10 @@ def job_summary(job: JobRecord) -> dict:
     duration = int(job.get("duration_seconds") or 0)
     elapsed = max(0.0, time.time() - started) if started else 0.0
     status = job.get("status") or "unknown"
-    remaining = max(0, int(duration - elapsed)) if duration and status not in ("done", "error", "simulating") else 0
+    if not duration and status not in ("done", "error", "simulating"):
+        remaining = None  # continuous monitoring has no end time
+    else:
+        remaining = max(0, int(duration - elapsed)) if duration and status not in ("done", "error", "simulating") else 0
     return {
         "task_id": job.get("task_id"),
         "status": status,
@@ -230,5 +279,7 @@ def job_summary(job: JobRecord) -> dict:
         "elapsed_seconds": int(elapsed),
         "remaining_seconds": remaining,
         "running": status not in ("done", "error"),
+        # duration 0 marks continuous monitoring: no end time, runs until stopped.
+        "continuous": duration == 0,
         "ok": status == "done" and not (isinstance(job.get("result"), dict) and job["result"].get("error")),
     }

@@ -1,7 +1,12 @@
-"""Baranyi–Roberts growth under a dynamic temperature profile.
+"""Baranyi-Roberts growth under a measured temperature profile.
 
-Supports the project’s legacy Pseudomonas secondary model and Ratkowsky-style
-square-root EGR models (log10 CFU/h) used for verified cooling entries.
+simulate_growth() is the function the web app calls after a collector returns
+time_hours and ambient_temperature. It builds a one-minute grid, spline-fits
+temperature onto that grid, integrates the physiological state Q, then
+integrates log population y with a 4th-order Runge-Kutta step. Growth rate
+comes from secondary_model(), which is either the legacy quadratic form
+(Pseudomonas baseline and the Bacillus cereus test set) or the Ratkowsky
+square-root EGR form (Juneja 2001 cooling entries, log10 CFU/h).
 """
 
 from __future__ import annotations
@@ -83,6 +88,10 @@ class CorrectedMicrobialGrowthModel:
             return float(max(mumax, 0.0))
 
         raise ValueError(f'Unknown secondary model: {self.secondary}')
+
+    def live_estimator(self):
+        """Return a LivePopulationEstimate that collectors feed one reading at a time."""
+        return LivePopulationEstimate(self)
 
     def simulate_growth(self, time_hours_coarse, temperatures_coarse):
         """
@@ -171,3 +180,80 @@ class CorrectedMicrobialGrowthModel:
                 self.meta.get('show_pseudomonas_experiment')
             ),
         }
+
+
+class LivePopulationEstimate:
+    """Running population estimate, advanced one live reading at a time.
+
+    Uses the same Baranyi-Roberts equations as simulate_growth():
+        dQ/dt = μmax(T)
+        dy/dt = μmax(T) · α(Q) · (1 − exp(y − ymax)),  α(Q) = 1 / (1 + e^−Q)
+    Between two readings the temperature is taken as a straight line, and the
+    gap is split into RK4 steps of at most one minute (the simulator's step).
+    The final simulation fits a spline through the whole series instead, so
+    the end-of-run curve can differ from these live values in the last decimals.
+    """
+
+    def __init__(self, model):
+        self.model = model
+        q0 = 1.0 / (np.exp(model.h0) - 1.0)
+        self.Q = float(np.log(q0))
+        self.y = float(model.y0)
+        self._t = None
+        self._T = None
+
+    @staticmethod
+    def _alpha(Q):
+        return 1.0 / (1.0 + np.exp(-Q))
+
+    def update(self, t_hours, celsius):
+        """Advance to ``t_hours`` given the reading ``celsius``; return log population."""
+        t = float(t_hours)
+        c = float(celsius)
+        if self._t is None or t <= self._t:
+            # First reading, or a repeated timestamp: nothing to integrate yet.
+            if self._t is None:
+                self._t = t
+            self._T = c
+            return self.y
+
+        m = self.model
+        span = t - self._t
+        T0 = self._T
+        steps = max(1, int(np.ceil(span / m.dth - 1e-9)))
+        h = span / steps
+        for i in range(steps):
+            s0 = i * h
+            mu1 = m.secondary_model(T0 + (c - T0) * s0 / span)
+            mu2 = m.secondary_model(T0 + (c - T0) * (s0 + h / 2) / span)
+            mu3 = m.secondary_model(T0 + (c - T0) * (s0 + h) / span)
+
+            Q_mid = self.Q + h / 4 * (mu1 + mu2)
+            Q_end = self.Q + h / 6 * (mu1 + 4 * mu2 + mu3)
+            a1, a2, a3 = self._alpha(self.Q), self._alpha(Q_mid), self._alpha(Q_end)
+
+            y = self.y
+            k1 = h * mu1 * a1 * (1 - np.exp(y - m.ymax))
+            k2 = h * mu2 * a2 * (1 - np.exp(y + k1 / 2 - m.ymax))
+            k3 = h * mu2 * a2 * (1 - np.exp(y + k2 / 2 - m.ymax))
+            k4 = h * mu3 * a3 * (1 - np.exp(y + k3 - m.ymax))
+            self.y = float(y + (k1 + 2 * k2 + 2 * k3 + k4) / 6)
+            self.Q = float(Q_end)
+
+        self._t = t
+        self._T = c
+        return self.y
+
+    def note(self, t_hours, celsius):
+        """Log-line suffix such as ', pop 2.517 log CFU/g (+0.0071)'; '' on bad input.
+
+        The change since the start gets four decimals: on short runs growth is
+        a few thousandths of a log, and three decimals would sit still.
+        """
+        if t_hours is None or celsius is None:
+            return ''
+        try:
+            y = self.update(t_hours, celsius)
+        except (TypeError, ValueError):
+            return ''
+        return f', pop {y:.3f} log CFU/g ({y - self.model.y0:+.4f})'

@@ -12,6 +12,7 @@ import time
 import numpy as np
 
 from arduino_serial import _parse_celsius
+from run_control import sleep_unless_stopped, stop_requested
 
 WIFI_NAME = 'arduino-temp.local'
 WIFI_PORT = 8080
@@ -332,10 +333,18 @@ def _read_latest(sock, pending):
     return _parse_celsius(raw)
 
 
-def collect_wifi_temperature_data(host, duration_hours, interval_seconds=2, port=WIFI_PORT, log=None):
+def collect_wifi_temperature_data(
+    host, duration_hours, interval_seconds=2, port=WIFI_PORT, log=None, model=None,
+    should_stop=None,
+):
     """Collect a time series in the same shape as the USB collector.
 
     ``log`` is an optional callable that receives progress strings.
+    ``model`` is an optional CorrectedMicrobialGrowthModel; when given, each
+    reading line also shows the running population estimate.
+    ``should_stop`` is an optional callable; when it returns True the run ends
+    early and the readings so far are returned. duration_hours may be
+    run_control.CONTINUOUS to run until stopped.
     Returns None when the board cannot be reached or no readings arrive.
     """
     def _log(message):
@@ -355,6 +364,7 @@ def collect_wifi_temperature_data(host, duration_hours, interval_seconds=2, port
         label = f"{label} ({address})"
     _log(f'📶 Connecting to {label} on port {board_port}...')
 
+    live = model.live_estimator() if model else None
     time_data = []
     temps = []
     pending = [b'']
@@ -362,15 +372,19 @@ def collect_wifi_temperature_data(host, duration_hours, interval_seconds=2, port
         with socket.create_connection((address, board_port), timeout=5) as sock:
             start = time.time()
             end = start + (duration_hours * 3600)
-            while time.time() < end:
+            while time.time() < end and not stop_requested(should_stop):
                 celsius = _read_latest(sock, pending)
                 if celsius is None:
                     continue
                 elapsed_hours = (time.time() - start) / 3600
                 time_data.append(elapsed_hours)
                 temps.append(celsius)
-                _log(f'🌡️ Reading #{len(temps)}: {celsius:.1f}°C')
-                time.sleep(interval_seconds)
+                _log(
+                    f'🌡️ Reading #{len(temps)}: {celsius:.1f}°C'
+                    + (live.note(elapsed_hours, celsius) if live else '')
+                )
+                if sleep_unless_stopped(interval_seconds, should_stop):
+                    break
     except ConnectionError as exc:
         if time_data:
             _log(f'⚠️ {exc} Using the readings already received.')
