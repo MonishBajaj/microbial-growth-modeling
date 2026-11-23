@@ -100,6 +100,31 @@ def extract_live_meater_reading(device_payload):
     }
 
 
+def describe_meater_http_error(status_code, body_text=''):
+    """One line for the run log explaining a failed MEATER Cloud call."""
+    hints = {
+        401: 'MEATER Cloud rejected the sign-in. The dashboard email and password '
+             'must be the same as your MEATER app account.',
+        429: 'MEATER Cloud is rate-limiting this account (too many requests). '
+             'Another run or app may be polling the same account; wait a minute.',
+    }
+    hint = hints.get(status_code)
+    if hint is None and status_code >= 500:
+        hint = 'MEATER Cloud is having trouble; try again shortly.'
+    detail = (body_text or '').strip().replace('\n', ' ')[:160]
+    return f'HTTP {status_code}' + (f' — {hint}' if hint else '') + (f' ({detail})' if detail and not hint else '')
+
+
+# Why GET /devices can be empty, from MEATER's API README.
+MEATER_NOT_LISTED_HELP = (
+    'MEATER Cloud only lists a probe while the MEATER phone app (or Block) has a '
+    'Bluetooth connection to it AND MEATER Cloud is switched on and signed in '
+    'inside the app (MEATER app → Settings → MEATER Cloud). Keep the phone near '
+    'the probe with the app open, and make sure this probe has done at least one '
+    'cook while connected to MEATER Cloud.'
+)
+
+
 class EnhancedMeaterAPI:
     """
     Enhanced MEATER Cloud REST API client with real-time terminal display
@@ -113,6 +138,8 @@ class EnhancedMeaterAPI:
         self.is_connected = False
         self.current_device_id = None
         self.last_reject_reason = ''
+        # Why the last authenticate()/get_devices() failed, for the run log.
+        self.last_error = ''
 
     def authenticate(self, email, password):
         """
@@ -151,13 +178,16 @@ class EnhancedMeaterAPI:
             else:
                 print(f"❌ Authentication failed: {response.status_code}")
                 print(f"Response: {response.text}")
+                self.last_error = describe_meater_http_error(response.status_code, response.text)
                 return False
 
         except requests.exceptions.RequestException as e:
             print(f"❌ Network error during authentication: {e}")
+            self.last_error = f'could not reach MEATER Cloud ({e})'
             return False
         except Exception as e:
             print(f"❌ Authentication error: {e}")
+            self.last_error = str(e)
             return False
 
     def get_devices(self):
@@ -182,6 +212,7 @@ class EnhancedMeaterAPI:
             response = requests.get(devices_url, headers=headers, timeout=10)
 
             if response.status_code == 200:
+                self.last_error = ''
                 devices_data = response.json()
                 devices = devices_data.get('data', {}).get('devices', [])
 
@@ -200,14 +231,51 @@ class EnhancedMeaterAPI:
             else:
                 print(f"❌ Failed to get devices: {response.status_code}")
                 print(f"Response: {response.text}")
+                self.last_error = describe_meater_http_error(response.status_code, response.text)
                 return None
 
         except requests.exceptions.RequestException as e:
             print(f"❌ Network error getting devices: {e}")
+            self.last_error = f'could not reach MEATER Cloud ({e})'
             return None
         except Exception as e:
             print(f"❌ Error getting devices: {e}")
+            self.last_error = str(e)
             return None
+
+    def find_device(self, log=None, wait_seconds=60, poll_seconds=10, should_stop=None):
+        """Return the first listed probe id, retrying while MEATER Cloud catches up.
+
+        MEATER's docs say a probe can take a while to appear in GET /devices.
+        Polls every ``poll_seconds`` (6/min, under the 60/min API limit) for up
+        to ``wait_seconds`` and logs why the list came back empty or failed.
+        Returns None when nothing is listed in time.
+        """
+        def _log(message):
+            if log is not None:
+                log(message)
+
+        deadline = time.time() + max(wait_seconds, 0)
+        explained = False
+        last_logged = None
+        while True:
+            data = self.get_devices()
+            devices = (data or {}).get('data', {}).get('devices') or []
+            if devices:
+                return devices[0]['id']
+            if data is None:
+                reason = self.last_error or 'unknown error'
+                if reason != last_logged:
+                    _log(f'⚠️ MEATER device lookup failed: {reason}')
+                    last_logged = reason
+            elif not explained:
+                _log('⚠️ MEATER Cloud lists no probes for this account yet. ' + MEATER_NOT_LISTED_HELP)
+                explained = True
+            if time.time() + poll_seconds > deadline:
+                return None
+            _log(f'🔁 Checking MEATER Cloud again in {poll_seconds:.0f}s…')
+            if sleep_unless_stopped(poll_seconds, should_stop):
+                return None
 
     def get_device_realtime(self, device_id):
         """

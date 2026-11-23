@@ -29,7 +29,11 @@ from flask import (
     Flask, render_template, request, redirect,
     url_for, session, flash, jsonify
 )
-from enhanced_meater_api import EnhancedMeaterAPI, extract_live_meater_reading
+from enhanced_meater_api import (
+    MEATER_NOT_LISTED_HELP,
+    EnhancedMeaterAPI,
+    extract_live_meater_reading,
+)
 from local_accounts import create_profile, reset_password, verify_login
 from job_store import (
     clear_stop,
@@ -292,6 +296,12 @@ def _note_if_stopped(info, task_id, temp_data):
 # Background-task runner (modes 1–3)
 # ---------------------------------------------------------------------------
 
+def _meater_auth_error(api):
+    """Run-log message for a failed MEATER sign-in, with MEATER's reason when known."""
+    reason = getattr(api, 'last_error', '') or 'check your credentials'
+    return f'MEATER sign-in failed: {reason}'
+
+
 def _run_mode1(task_id, email, password, model_id=None):
     """Mode 1 — Quick Connection Test (background)."""
     info = _bind_job(task_id)
@@ -306,17 +316,18 @@ def _run_mode1(task_id, email, password, model_id=None):
     auth_ok = api.authenticate(email, password)
 
     if not auth_ok:
-        info['logs'].append('❌ Authentication failed.')
+        msg = _meater_auth_error(api)
+        info['logs'].append(f'❌ {msg}')
         info['status'] = 'error'
-        info['result'] = {'error': 'Authentication failed. Check your credentials.'}
+        info['result'] = {'error': msg}
         return
 
     info['logs'].append('✅ Authentication successful.')
     info['logs'].append('🔍 Searching for MEATER devices...')
     info['status'] = 'searching_devices'
 
-    devices = api.get_devices()
-    if not devices or not devices.get('data', {}).get('devices'):
+    device_id = api.find_device(log=info['logs'].append)
+    if not device_id:
         info['logs'].append('⚠️ No MEATER devices found.')
         info['status'] = 'done'
         info['result'] = {
@@ -327,7 +338,6 @@ def _run_mode1(task_id, email, password, model_id=None):
         }
         return
 
-    device_id = devices['data']['devices'][0]['id']
     info['logs'].append(f'📱 Testing device: {device_id[:8]}...')
     info['status'] = 'testing'
 
@@ -387,22 +397,22 @@ def _run_mode2_3(
 
     api = EnhancedMeaterAPI()
     if not api.authenticate(email, password):
-        info['logs'].append('❌ Authentication failed.')
+        msg = _meater_auth_error(api)
+        info['logs'].append(f'❌ {msg}')
         info['status'] = 'error'
-        info['result'] = {'error': 'Authentication failed.'}
+        info['result'] = {'error': msg}
         return
 
     info['logs'].append('✅ Authenticated. Searching for devices...')
     info['status'] = 'searching_devices'
 
-    devices = api.get_devices()
-    if not devices or not devices.get('data', {}).get('devices'):
+    device_id = api.find_device(log=info['logs'].append, should_stop=_stop_check(task_id))
+    if not device_id:
         info['logs'].append('⚠️ No MEATER devices found.')
         info['status'] = 'error'
-        info['result'] = {'error': 'No MEATER devices found.'}
+        info['result'] = {'error': 'No MEATER devices found. ' + MEATER_NOT_LISTED_HELP}
         return
 
-    device_id = devices['data']['devices'][0]['id']
     info['logs'].append(f'📡 Collecting data from device {device_id[:8]}...')
     info['status'] = 'collecting'
 
