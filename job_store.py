@@ -86,15 +86,33 @@ def _serialize_result(result):
     return out
 
 
+def is_new_reading_line(message: str) -> bool:
+    """True for a log line that reports a freshly received temperature.
+
+    Every collector (MEATER, ThermoWorks, Arduino USB/Wi-Fi/Push) logs each new
+    sample as "🌡️ Reading #N…" (Arduino Push also logs a "🌡️ Seed reading").
+    Push "(held, …)" lines repeat the last value when nothing new arrived, so
+    they do not count as data.
+    """
+    return message.startswith("🌡️") and "(held," not in message
+
+
 class JobLogs(list):
-    """List that persists the parent job whenever a log line is appended."""
+    """List that persists the parent job whenever a log line is appended.
+
+    It also stamps ``last_reading_at`` on the job for each new reading line, so
+    the dashboard can tell when a source has stopped sending data.
+    """
 
     def __init__(self, job: "JobRecord", items=None):
         super().__init__(items or [])
         self._job = job
 
     def append(self, message):  # noqa: A003
-        super().append(str(message))
+        message = str(message)
+        if is_new_reading_line(message):
+            dict.__setitem__(self._job, "last_reading_at", time.time())
+        super().append(message)
         self._job.persist()
 
 
@@ -131,6 +149,8 @@ class JobRecord(dict):
                 "source": self.get("source"),
                 "started_at": self.get("started_at"),
                 "duration_seconds": self.get("duration_seconds"),
+                "interval_seconds": self.get("interval_seconds"),
+                "last_reading_at": self.get("last_reading_at"),
                 "updated_at": time.time(),
                 "logs": list(self.get("logs") or []),
                 "result": _serialize_result(self.get("result")),
@@ -162,6 +182,7 @@ def create_job(
     duration_seconds: int,
     label: str = "",
     source: str = "",
+    interval_seconds: float = 0,
 ) -> JobRecord:
     job = JobRecord(
         task_id,
@@ -172,6 +193,9 @@ def create_job(
             "logs": [],
             "started_at": time.time(),
             "duration_seconds": int(duration_seconds or 0),
+            # Sampling interval; sets how long a silent source counts as stalled.
+            "interval_seconds": float(interval_seconds or 0),
+            "last_reading_at": None,
             "mode_label": mode_label or "",
             "label": label or "",
             "source": source or "",
@@ -219,7 +243,10 @@ def get_job(task_id: str, *, prefer_cache: bool = False) -> Optional[JobRecord]:
         # the disk copy is not newer in a meaningful way for result payloads.
         if cached is not None and cached.get("status") not in ("done", "error"):
             # Refresh fields from disk into the same object so runners keep working.
-            for key in ("status", "mode_label", "label", "source", "started_at", "duration_seconds", "owner"):
+            for key in (
+                "status", "mode_label", "label", "source", "started_at", "duration_seconds",
+                "owner", "interval_seconds", "last_reading_at",
+            ):
                 if key in data:
                     dict.__setitem__(cached, key, data.get(key))
             logs = data.get("logs") or []
@@ -278,6 +305,8 @@ def job_summary(job: JobRecord) -> dict:
         "duration_seconds": duration,
         "elapsed_seconds": int(elapsed),
         "remaining_seconds": remaining,
+        "interval_seconds": float(job.get("interval_seconds") or 0),
+        "last_reading_at": job.get("last_reading_at"),
         "running": status not in ("done", "error"),
         # duration 0 marks continuous monitoring: no end time, runs until stopped.
         "continuous": duration == 0,

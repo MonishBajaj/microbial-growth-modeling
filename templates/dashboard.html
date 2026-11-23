@@ -40,6 +40,9 @@
                         {% elif job.running and job.remaining_seconds is not none %}
                         <span>~{{ (job.remaining_seconds // 60) }}m {{ (job.remaining_seconds % 60) }}s left</span>
                         {% endif %}
+                        {% if job.stalled %}
+                        <span class="job-stalled">⚠ No data for {{ job.seconds_since_data // 60 }} min</span>
+                        {% endif %}
                     </div>
                 </a>
                 {% endfor %}
@@ -310,8 +313,11 @@
             list.innerHTML = jobs.map(function (job) {
                 const href = statusBase.replace('__ID__', encodeURIComponent(job.task_id));
                 const cls = job.running ? 'is-running' : (job.ok ? 'is-done' : 'is-error');
-                const remain = !job.running ? '' :
-                    '<span>' + (job.continuous ? 'Until stopped' : formatRemain(job.remaining_seconds)) + '</span>';
+                const remain = (!job.running ? '' :
+                    '<span>' + (job.continuous ? 'Until stopped' : formatRemain(job.remaining_seconds)) + '</span>') +
+                    (job.stalled
+                        ? '<span class="job-stalled">⚠ No data for ' + Math.floor((job.seconds_since_data || 0) / 60) + ' min</span>'
+                        : '');
                 return (
                     '<a class="job-row ' + cls + '" href="' + href + '">' +
                     '<div class="job-main"><strong>' + (job.mode_label || 'Analysis') + '</strong>' +

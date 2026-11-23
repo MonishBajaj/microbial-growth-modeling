@@ -1,4 +1,4 @@
-# ThermoWorks App Check Helper v1.2.0
+# ThermoWorks App Check Helper v1.3.0
 
 What the token is used for, and the lab-PC sidecar alternative, are in [docs/USER_GUIDE.md](../../docs/USER_GUIDE.md) under "ThermoWorks Signals".
 
@@ -17,7 +17,7 @@ Opening ThermoWorks does **not** fill Render by itself. This helper mints App Ch
 1. `chrome://extensions`
 2. On the helper → **Remove**
 3. Developer mode → **Load unpacked** → this folder
-4. Confirm version **1.2.0** and **no Errors**
+4. Confirm version **1.3.0** and **no Errors**
 5. Open Render dashboard in **this Chrome** → Signals → **Refresh**
 
 ## What success looks like

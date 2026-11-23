@@ -26,7 +26,15 @@ mints there, then **POSTs the token to Render** (`/api/thermoworks/appcheck`).
 
 See `chrome_extension/thermoworks_appcheck/README.md`.
 
-Tokens are cached ~1 hour, so you usually only do this once per session.
+Tokens last about 1 hour. While a Signals run is going, any open page of the
+app (status page or dashboard) asks the helper (v1.3+) to renew the token in a
+hidden background tab once less than 15 minutes are left, so long runs keep
+reading. Keep one app tab open in that Chrome and the computer awake. If
+renewal fails, a banner offers **Renew now**, which opens the usual popup.
+
+Every page also warns (banner, desktop notification, beep) when any running
+job — MEATER, ThermoWorks or Arduino — goes several sampling intervals without
+a new reading, and again when readings resume.
 
 Routes used:
 

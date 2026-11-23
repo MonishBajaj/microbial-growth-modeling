@@ -51,9 +51,11 @@ from arduino_wifi import (
     lookup_board,
 )
 from thermoworks_signals import (
+    SIDECAR_CHUNK_HOURS,
     collect_temperature_data as collect_signals_temperature_data,
     device_snapshot_for_api,
     list_devices as list_signals_devices,
+    uses_sidecar as signals_uses_sidecar,
 )
 from thermoworks_appcheck import (
     appcheck_status,
@@ -640,7 +642,7 @@ def logout():
 @login_required
 def dashboard():
     owner = (session.get('email') or '').lower()
-    jobs = [job_summary(job) for job in list_jobs(owner)]
+    jobs = [_with_data_watch(job_summary(job)) for job in list_jobs(owner)]
     return render_template('dashboard.html', jobs=jobs)
 
 
@@ -909,7 +911,7 @@ def analyze():
             'arduino_usb': 'Arduino USB',
             'arduino_wifi': 'Arduino Wi‑Fi',
             'arduino_push': 'Arduino Push',
-            'signals': 'ThermoWorks Signals',
+            'signals': SIGNALS_SOURCE,
             'meater': 'MEATER',
         }.get(source, source or 'MEATER')
 
@@ -978,6 +980,8 @@ def analyze():
             duration_seconds=duration_seconds,
             label=label,
             source=source_label,
+            # Quick test samples every 2 s (see _run_live_test).
+            interval_seconds=2 if mode == '1' else run_interval,
         )
         background_tasks[task_id] = job
 
@@ -1098,7 +1102,47 @@ def api_stop_task(task_id):
 def api_jobs():
     """JSON list of this user's runs for the dashboard panel."""
     owner = (session.get('email') or '').lower()
-    return jsonify({'jobs': [job_summary(job) for job in list_jobs(owner)]})
+    return jsonify({'jobs': [_with_data_watch(job_summary(job)) for job in list_jobs(owner)]})
+
+
+# A collecting run counts as "not sending data" once nothing new has arrived for
+# STALL_INTERVALS sampling intervals, and never sooner than STALL_MIN_SECONDS so
+# one slow cloud reply is not reported. static/run_watch.js shows the alert.
+STALL_INTERVALS = 4
+STALL_MIN_SECONDS = 120
+SIGNALS_SOURCE = 'ThermoWorks Signals'
+
+
+def _stall_after_seconds(summary) -> float:
+    interval = float(summary.get('interval_seconds') or 0) or 30.0
+    limit = max(STALL_INTERVALS * interval, STALL_MIN_SECONDS)
+    if summary.get('source') == SIGNALS_SOURCE and signals_uses_sidecar():
+        # The sidecar hands back readings in chunks, not one at a time.
+        limit = max(limit, SIDECAR_CHUNK_HOURS * 3600 + 180)
+    return limit
+
+
+def _with_data_watch(summary) -> dict:
+    """Add data-watch fields to a job summary.
+
+    stalled: collecting, not stopping, and no new reading for stall_after_seconds
+    (counted from the start of the run until the first reading arrives).
+    needs_appcheck: a running ThermoWorks run that relies on browser-minted App
+    Check tokens, so open pages should keep the token renewed.
+    """
+    now = time.time()
+    since = now - float(summary.get('last_reading_at') or summary.get('started_at') or now)
+    stall_after = _stall_after_seconds(summary)
+    collecting = summary.get('status') == 'collecting' and not stop_requested(summary['task_id'])
+    summary['seconds_since_data'] = int(max(since, 0))
+    summary['stall_after_seconds'] = int(stall_after)
+    summary['stalled'] = bool(collecting and since > stall_after)
+    summary['needs_appcheck'] = bool(
+        summary.get('running')
+        and summary.get('source') == SIGNALS_SOURCE
+        and not signals_uses_sidecar()
+    )
+    return summary
 
 
 # ---------------------------------------------------------------------------

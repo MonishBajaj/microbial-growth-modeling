@@ -44,6 +44,22 @@
         </div>
     </div>
 
+    {% if session.get('authenticated') %}
+    {# Run watcher: no-data alerts for every source and ThermoWorks App Check renewal (static/run_watch.js). #}
+    <div id="run-alerts" class="run-alerts" aria-live="polite" hidden></div>
+    <script>
+        window.RUN_WATCH = {
+            jobsUrl: "{{ url_for('api_jobs') }}",
+            statusUrl: "{{ url_for('task_status_page', task_id='__ID__') }}",
+            appcheckStatusUrl: "{{ url_for('thermoworks_appcheck_status') }}",
+            appcheckBridgeUrl: "{{ url_for('thermoworks_appcheck_bridge') }}",
+            appcheckPageUrl: "{{ url_for('thermoworks_appcheck_page') }}",
+            appcheckSubmitPath: "{{ url_for('thermoworks_appcheck_submit') }}"
+        };
+    </script>
+    <script src="{{ url_for('static', filename='run_watch.js') }}" defer></script>
+    {% endif %}
+
     {% block scripts %}{% endblock %}
 </body>
 </html>

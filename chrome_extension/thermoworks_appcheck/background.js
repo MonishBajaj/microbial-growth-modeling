@@ -2,6 +2,8 @@
 // dashboard_bridge.js asks it to open cloud.thermoworks.com in the same tab,
 // mint a Firebase App Check token in the page, and POST {token, ttl, bridge_id}
 // to the dashboard submit URL. A stored job older than 15 minutes is dropped.
+// During a run, static/run_watch.js asks for 'tw-appcheck-renew' before the
+// ~1 h token expires; that mints in a hidden background tab instead.
 
 async function getJob() {
   const stored = await chrome.storage.session.get('twAppCheckJob');
@@ -70,7 +72,7 @@ async function mintInPage(tabId) {
   return result || { ok: false, error: 'No result from page' };
 }
 
-async function submitAndReturn(tabId, job, token, ttl) {
+async function postToken(job, token, ttl) {
   const save = await fetch(job.submitUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
@@ -84,6 +86,10 @@ async function submitAndReturn(tabId, job, token, ttl) {
   if (!save.ok) {
     throw new Error(body.error || ('Submit HTTP ' + save.status + ' to ' + job.submitUrl));
   }
+}
+
+async function submitAndReturn(tabId, job, token, ttl) {
+  await postToken(job, token, ttl);
   await chrome.storage.session.remove('twAppCheckJob');
   if (job.returnUrl) {
     await chrome.tabs.update(tabId, { url: job.returnUrl, active: true });
@@ -91,9 +97,79 @@ async function submitAndReturn(tabId, job, token, ttl) {
 }
 
 const mintingTabs = new Set();
+// Hidden tabs opened by renewInBackground; the interactive flow leaves them alone.
+const renewTabs = new Set();
+let renewRunning = null;
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function waitForTabComplete(tabId, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    let finished = false;
+    const finish = (err) => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(listener);
+      if (err) {
+        reject(err);
+      } else {
+        resolve();
+      }
+    };
+    const timer = setTimeout(
+      () => finish(new Error('cloud.thermoworks.com did not finish loading')),
+      timeoutMs
+    );
+    function listener(id, info) {
+      if (id === tabId && info.status === 'complete') {
+        finish();
+      }
+    }
+    chrome.tabs.onUpdated.addListener(listener);
+    // The tab may have finished before the listener was added.
+    chrome.tabs.get(tabId).then((tab) => {
+      if (tab && tab.status === 'complete') {
+        finish();
+      }
+    }).catch((err) => finish(err));
+  });
+}
+
+// Renew the token during a run without touching the user's tabs: open
+// ThermoWorks in a background tab, mint there, POST to the dashboard, close it.
+async function renewInBackground(job, windowId) {
+  const create = { url: 'https://cloud.thermoworks.com/auth/login', active: false };
+  if (windowId !== undefined) {
+    create.windowId = windowId;
+  }
+  const tab = await chrome.tabs.create(create);
+  renewTabs.add(tab.id);
+  try {
+    await waitForTabComplete(tab.id, 45000);
+    await sleep(2000);
+    let minted = await mintInPage(tab.id);
+    if (!minted.ok) {
+      // reCAPTCHA can load late in a background tab; give it one more try.
+      await sleep(4000);
+      minted = await mintInPage(tab.id);
+    }
+    if (!minted.ok) {
+      throw new Error(minted.error || 'App Check mint failed');
+    }
+    await postToken(job, minted.token, minted.ttl);
+    console.info('[TW App Check Helper] background renewal posted to', job.submitUrl);
+    return { ok: true };
+  } finally {
+    renewTabs.delete(tab.id);
+    chrome.tabs.remove(tab.id).catch(() => {});
+  }
+}
 
 async function tryMintForTab(tabId, tabUrl) {
-  if (mintingTabs.has(tabId)) {
+  if (mintingTabs.has(tabId) || renewTabs.has(tabId)) {
     return;
   }
   if (!tabUrl || !tabUrl.startsWith('https://cloud.thermoworks.com/')) {
@@ -136,6 +212,28 @@ async function tryMintForTab(tabId, tabUrl) {
     mintingTabs.delete(tabId);
   }
 }
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!message || message.type !== 'tw-appcheck-renew') {
+    return;
+  }
+  if (!message.bridgeId || !message.submitUrl) {
+    sendResponse({ ok: false, error: 'bridgeId and submitUrl are required' });
+    return;
+  }
+  // Several open dashboard tabs may ask at once; share one renewal.
+  if (!renewRunning) {
+    const job = { bridgeId: message.bridgeId, submitUrl: message.submitUrl };
+    const windowId = sender.tab ? sender.tab.windowId : undefined;
+    renewRunning = renewInBackground(job, windowId)
+      .catch((err) => ({ ok: false, error: String(err && err.message ? err.message : err) }))
+      .finally(() => {
+        renewRunning = null;
+      });
+  }
+  renewRunning.then(sendResponse);
+  return true;
+});
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || message.type !== 'tw-appcheck-start') {

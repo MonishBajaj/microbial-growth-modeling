@@ -1113,3 +1113,56 @@ a:hover { color: var(--primary-hover); text-decoration: underline; }
         padding-top: 1.25rem;
     }
 }
+
+/* ---- Run watcher alerts (static/run_watch.js) ----
+   Fixed under the navbar so they stay visible while scrolling and clear the
+   dashboard's bottom run dock. Below the loading overlay (z-index 200). */
+.run-alerts {
+    position: fixed;
+    top: 64px;
+    right: 16px;
+    z-index: 150;
+    width: min(420px, calc(100% - 32px));
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.run-alerts[hidden] { display: none; }
+
+.run-alert {
+    padding: 0.8rem 0.95rem;
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-md);
+    background: var(--canvas);
+    box-shadow: var(--shadow-lg);
+    font-size: 0.88rem;
+    line-height: 1.45;
+    color: var(--ink);
+}
+
+.run-alert-warn {
+    border-color: #fdba74;
+    border-left: 4px solid var(--warning);
+    background: var(--warning-soft);
+    color: #7c2d12;
+}
+
+.run-alert-info { border-left: 4px solid var(--primary); }
+
+.run-alert-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-top: 0.55rem;
+}
+
+.run-alert-btn {
+    padding: 0.4rem 0.75rem;
+    font-size: 0.82rem;
+}
+
+.job-stalled {
+    color: var(--warning);
+    font-weight: 600;
+}

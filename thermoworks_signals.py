@@ -41,6 +41,11 @@ def _sidecar_url() -> str:
     return (os.environ.get('THERMOWORKS_SIDECAR_URL') or '').strip().rstrip('/')
 
 
+def uses_sidecar() -> bool:
+    """True when collection goes through the lab sidecar, which mints its own App Check."""
+    return bool(_sidecar_url())
+
+
 def _sidecar_secret() -> str:
     return os.environ.get('THERMOWORKS_SIDECAR_SECRET', 'thermoworks-sidecar-secret')
 
@@ -432,16 +437,35 @@ async def _collect_async(
         f'{span} every {interval_seconds:.0f}s…',
     )
 
+    # Consecutive failed reads. A long outage (e.g. an expired App Check token)
+    # logs the first failure, any new error text, and every 10th repeat, not
+    # one identical line per interval.
+    fail_streak = 0
+    last_error = ''
+
     while time.time() < end and not stop_requested(should_stop):
         try:
             growth_c, companion_c, growth_reason = await _read_pair(
                 client, serial, channel, companion,
             )
         except Exception as exc:
-            _log(log, f'⚠️ Read failed: {exc}')
+            fail_streak += 1
+            message = str(exc)
+            if fail_streak == 1 or message != last_error or fail_streak % 10 == 0:
+                _log(
+                    log,
+                    f'⚠️ Read failed: {message}'
+                    + (f' ({fail_streak} failures in a row)' if fail_streak > 1 else ''),
+                )
+            last_error = message
             if await async_sleep_unless_stopped(interval_seconds, should_stop):
                 break
             continue
+
+        if fail_streak:
+            _log(log, f'✅ ThermoWorks reads working again after {fail_streak} failed attempt(s).')
+            fail_streak = 0
+            last_error = ''
 
         if growth_c is None:
             _log(
